@@ -1,0 +1,7 @@
+# Bitcoin Core release signing keys this build will accept.
+#
+# EMPTY ON PURPOSE. Run scripts/import-builder-keys.sh, review the candidate
+# list it produces against sources you trust independently, and commit only
+# the fingerprints you can corroborate.
+#
+# One fingerprint per line, uppercase hex, no spaces. Comments with #.
