@@ -67,9 +67,36 @@ done < <(awk '{sub(/#.*/,""); gsub(/[[:space:]]/,""); if (length) print toupper(
          keys/trusted-fingerprints.txt)
 (( missing )) || printf '  OK    %-18s all %d allowlisted keys present\n' "keyring" "${n_allow}"
 
+# keys/trusted-keyring.gpg is DERIVED from keys/*.asc and is what the container
+# build actually verifies against (gpgv cannot import, so it needs a keyring).
+# If it drifts from the allowlist, the image build and the host check stop
+# agreeing — the exact split invariant 6 exists to prevent. Compare the keys the
+# keyring actually contains against the allowlist, rather than byte-comparing a
+# regenerated file, which would churn across gpg versions.
+KEYRING="keys/trusted-keyring.gpg"
+if [[ ! -f "${KEYRING}" ]]; then
+  printf '  FAIL  %-18s %s is absent — run scripts/build-keyring.sh\n' "keyring file" "${KEYRING}"
+  fail=1
+else
+  kr_fprs="$(gpg --show-keys --with-colons "${KEYRING}" 2>/dev/null \
+             | awk -F: '/^fpr:/ && !seen[$10]++ {print $10}' | sort -u)"
+  allow_fprs="$(awk '{sub(/#.*/,""); gsub(/[[:space:]]/,""); if (length) print toupper($0)}' \
+                keys/trusted-fingerprints.txt | sort -u)"
+  # The keyring carries subkey fingerprints too; only primaries must correspond.
+  extra="$(comm -23 <(echo "${allow_fprs}") <(echo "${kr_fprs}"))"
+  if [[ -n "${extra}" ]]; then
+    while read -r f; do
+      [[ -n "$f" ]] && printf '  FAIL  %-18s %s allowlisted but not in the keyring\n' "keyring" "$f"
+    done <<< "${extra}"
+    fail=1
+  else
+    printf '  OK    %-18s every allowlisted key is in %s\n' "keyring sync" "${KEYRING##*/}"
+  fi
+fi
+
 echo
 if (( fail )); then
-  echo "FAIL — values disagree, base is not digest-pinned, or a key file is missing" >&2
+  echo "FAIL — values disagree, base is unpinned, or the keyring does not match" >&2
   exit 1
 fi
 echo "OK — duplicated values agree"
