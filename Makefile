@@ -6,7 +6,8 @@ PLATFORM      ?= linux/amd64
 REGISTRY      ?= registry.example.com/bitcoin
 IMAGE         ?= $(REGISTRY)/bitcoind
 TAG           ?= $(VERSION)
-RUNTIME_BASE  ?= gcr.io/distroless/cc-debian12:nonroot
+# Pinned by digest (invariant 4). Keep in sync with the ARG in the Dockerfile.
+RUNTIME_BASE  ?= gcr.io/distroless/cc-debian12@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 MIN_GOOD_SIGS ?= 6
 
 VCS_REF       := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -17,16 +18,22 @@ BUILD_DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>
 
 export SOURCE_DATE_EPOCH
 
-.PHONY: help fetch verify build smoke verify-image verify-upstream digest sbom sign attest verify-sig clean
+.PHONY: help check-pins fetch verify cross-check build smoke verify-image verify-contents verify-upstream digest sbom sign attest verify-sig clean
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s$$'\t'
 
-fetch: ## Pull + verify a release into vendor/ (needs network)
+fetch: ## Pull + verify a release into upstream/ (needs network)
 	MIN_GOOD_SIGS=$(MIN_GOOD_SIGS) scripts/fetch-release.sh $(VERSION) $(TRIPLE)
 
-verify: ## Re-verify what is already in vendor/
+check-pins: ## Assert duplicated values agree across Dockerfile/Makefile/verify.sh
+	scripts/check-pins.sh
+
+verify: check-pins ## Re-verify what is already in upstream/
 	MIN_GOOD_SIGS=$(MIN_GOOD_SIGS) scripts/verify.sh $(VERSION) $(TRIPLE)
+
+cross-check: ## Second opinion on the signature threshold from Core's verify.py (needs network)
+	MIN_GOOD_SIGS=$(MIN_GOOD_SIGS) scripts/cross-check-verify-py.sh $(VERSION) $(TRIPLE)
 
 build: verify ## Build the image (hermetic — no network in the build)
 	docker buildx build \
@@ -56,6 +63,9 @@ smoke: ## Prove the runtime base can actually run the binaries
 verify-image: ## Prove the image's binaries are the verified upstream bytes (works on any image)
 	scripts/verify-image.sh $(IMAGE):$(TAG) $(VERSION) $(TRIPLE)
 
+verify-contents: ## Prove EVERY file in the image is accounted for, not just the binaries
+	scripts/verify-contents.sh $(IMAGE):$(TAG) $(VERSION) $(TRIPLE)
+
 # bitcoin/bitcoin unpacks the release tarball into /opt and puts it on PATH,
 # rather than installing into /usr/local/bin as we do. Verified against
 # willcl-ark/bitcoin-core-docker 31.1/Dockerfile, which does:
@@ -83,6 +93,10 @@ attest: ## Attach the provenance record + SBOM as attestations
 	cosign attest --key $(COSIGN_KEY) \
 	  --predicate sbom.spdx.json --type spdxjson \
 	  $$(docker inspect --format='{{index .RepoDigests 0}}' $(IMAGE):$(TAG))
+	cosign attest --key $(COSIGN_KEY) \
+	  --predicate contents-manifest.json \
+	  --type https://example.invalid/bitcoind-contents/v1 \
+	  $$(docker inspect --format='{{index .RepoDigests 0}}' $(IMAGE):$(TAG))
 
 verify-sig: ## Verify the signature and attestations round-trip
 	cosign verify --key $(COSIGN_KEY).pub $(IMAGE):$(TAG)
@@ -90,4 +104,4 @@ verify-sig: ## Verify the signature and attestations round-trip
 	  --type https://example.invalid/bitcoind-provenance/v1 $(IMAGE):$(TAG)
 
 clean:
-	rm -f provenance.json sbom.spdx.json
+	rm -f provenance.json sbom.spdx.json contents-manifest.json

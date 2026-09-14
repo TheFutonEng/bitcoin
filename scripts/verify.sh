@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Verify vendored Bitcoin Core release artifacts.
+# Verify the staged Bitcoin Core release artifacts in upstream/.
 #
 # This mirrors the check baked into the Dockerfile. Having it standalone means
 # you can run it in CI, on an air-gapped host, or as a pre-commit gate without
@@ -18,12 +18,12 @@ TRIPLE="${2:-x86_64-linux-gnu}"
 MIN_GOOD_SIGS="${MIN_GOOD_SIGS:-6}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENDOR="${REPO_ROOT}/vendor"
+UPSTREAM="${REPO_ROOT}/upstream"
 KEYS="${REPO_ROOT}/keys"
 TARBALL="bitcoin-${VERSION}-${TRIPLE}.tar.gz"
 
 for f in SHA256SUMS SHA256SUMS.asc "${TARBALL}"; do
-  [[ -f "${VENDOR}/${f}" ]] || { echo "missing vendor/${f}" >&2; exit 1; }
+  [[ -f "${UPSTREAM}/${f}" ]] || { echo "missing upstream/${f}" >&2; exit 1; }
 done
 
 shopt -s nullglob
@@ -39,10 +39,19 @@ gpg --batch --quiet --import "${keyfiles[@]}"
 
 status="$(mktemp)"
 gpg --batch --status-fd 1 --verify \
-    "${VENDOR}/SHA256SUMS.asc" "${VENDOR}/SHA256SUMS" >"${status}" 2>/dev/null || true
+    "${UPSTREAM}/SHA256SUMS.asc" "${UPSTREAM}/SHA256SUMS" >"${status}" 2>/dev/null || true
 
-# Fingerprints with a cryptographically valid signature over SHA256SUMS.
-signers="$(awk '/^\[GNUPG:\] VALIDSIG/ {print $3}' "${status}" | sort -u)"
+# Primary-key fingerprints with a cryptographically valid signature over
+# SHA256SUMS.
+#
+# Field 3 of VALIDSIG is the key that MADE the signature, which is the signing
+# SUBKEY whenever a builder signs with one — and several Core builders do
+# (fanquake, Emzy, willcl-ark, TheCharlatan on 31.1). The allowlist holds
+# PRIMARY fingerprints, so matching on $3 silently discards those signatures:
+# on 31.1 it counts 7 of 11. The last field is the primary key's fingerprint,
+# which is what the allowlist is expressed in. Deduping on the primary also
+# means one builder signing with two subkeys still counts once.
+signers="$(awk '/^\[GNUPG:\] VALIDSIG/ { print (NF >= 12 ? $NF : $3) }' "${status}" | sort -u)"
 
 # The hand-reviewed allowlist. Importable != trusted.
 allowed="$(awk '{sub(/#.*/,""); gsub(/[[:space:]]/,""); if (length) print toupper($0)}' "${KEYS}/trusted-fingerprints.txt" | sort -u)"
@@ -69,9 +78,9 @@ fi
 
 echo
 echo "checking tarball digest against SHA256SUMS"
-( cd "${VENDOR}" && grep "  ${TARBALL}\$" SHA256SUMS | sha256sum -c - )
+( cd "${UPSTREAM}" && grep "  ${TARBALL}\$" SHA256SUMS | sha256sum -c - )
 
-digest="$(sha256sum "${VENDOR}/${TARBALL}" | cut -d' ' -f1)"
+digest="$(sha256sum "${UPSTREAM}/${TARBALL}" | cut -d' ' -f1)"
 
 # Provenance record. Attach this to the image with `cosign attest` so the
 # signer set and upstream digest travel with the artifact into the air gap.

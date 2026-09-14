@@ -1,8 +1,9 @@
 # bitcoind-container
 
 Builds a Bitcoin Core container image from signature-verified upstream release
-binaries, on a base image we control, with artifacts vendored so the build is
-hermetic and rebuildable offline.
+binaries, on a distroless base we control. The signed `SHA256SUMS` is committed;
+the tarball is not. No build step touches the network, and the published image
+carries a signed manifest of everything inside it.
 
 Scope: builds, verifies, and publishes an image. Nothing about deployment.
 
@@ -37,8 +38,10 @@ What this repo actually gives you:
    in it. This one is distroless: no shell, no package manager, a far smaller
    CVE surface, and scanner evidence you own. This is not substitutable at any
    price, and it is the strongest single reason the repo exists.
-2. **Offline rebuildability.** Vendored artifacts in git means you can rebuild
-   from what is behind the wire. Pulling from Docker Hub means you cannot.
+2. **Artifact ownership.** You publish and retain the image yourself, so the
+   version you shipped stays available on your terms rather than a third
+   party's. See "Why the tarball is not committed" below — the published image,
+   not git, is the archive.
 3. **Lifecycle ownership.** Version cadence, signing under your key, SBOM, and
    no dependency on one volunteer's Docker Hub account continuing to exist.
    You would have to re-sign and re-scan a third-party image anyway.
@@ -64,37 +67,111 @@ What it does **not** give you, and what you are paying:
 Framed honestly: this is a **hardening and ownership** exercise. The provenance
 was already fine.
 
+## Why the tarball is not committed
+
+Decided 2026-09-12. Earlier versions of this file justified vendoring the
+release tarball into git as "offline rebuildability". That was overstated.
+
+**Committing the tarball adds no integrity.** `SHA256SUMS` carries signatures
+from a threshold of builders and is committed at ~11 KB. Any tarball fetched
+later is self-authenticating against it. The 86 MB blob proves nothing the
+11 KB does not — while costing ~172 MB per release across two arches,
+permanently, in every clone, un-prunable without rewriting history. `.tar.gz`
+is already compressed, so git cannot delta it.
+
+**The availability risk is real, though.** Measured 2026-09-12: Bitcoin Core
+30.0 and 30.1 are **gone** from `bitcoincore.org` — the directories are absent
+from the index, not merely the sums files. 22.0 through 29.0, 30.2, 30.3 and
+31.1 are still served. Upstream does withdraw releases, so "rebuild the image I
+shipped last year" can genuinely become impossible.
+
+**What GitHub does and does not preserve** (measured 2026-09-12). The
+`bitcoin/bitcoin` GitHub *releases* carry **no binaries at all** — v29.4, v31.1,
+v30.3, v31.0, v28.4, v29.3, v30.2 and v30.1 all report `assets=0`. They are
+release notes against a tag. The *tags* do survive, `v30.0` and `v30.1`
+included, but that is source: turning it back into official binaries means
+running the Guix build yourself.
+
+What GitHub does preserve is the **trust anchor**. `guix.sigs` retains the
+attestations for withdrawn releases — 30.0 has 24 signer directories, 30.1 has
+18 — and those sums are authoritative: for 31.1, all 16 signers'
+`all.SHA256SUMS` are byte-identical to what bitcoincore.org serves.
+`scripts/fetch-sums-from-guix-sigs.sh` exploits this, and `fetch-release.sh`
+falls back to it automatically. Verified against 30.0, which is genuinely gone
+upstream: it recovers the sums with 23 of 23 signers agreeing, 23 valid
+signatures against our allowlist, and the correct tarball hash
+`00964ae3…54248`. Note it yields *more* signatures than the upstream bundle
+(16 vs 11 for 31.1), because bitcoincore.org bundles a subset.
+
+**So verifying and obtaining are separable, and only obtaining is at risk.**
+Even for a withdrawn release you can still learn the correct hash; what you
+cannot do is get a file matching it.
+
+**That is answered by publishing, not by git.** The plan is to publish the built
+containers as releases on this repo, so the artifact itself persists. The
+published image is the archive: it contains the exact verified binaries, and the
+signed contents manifest travels with it.
+
+**The gap this leaves.** Publishing solves "I need the old image". It does not
+solve "I need that Bitcoin version on a *new* base" — the response to a
+distroless CVE, which is the load-bearing reason this repo exists. That rebuild
+needs the binaries again, and upstream may have withdrawn them. Tracked as a
+follow-up: add a build path that sources binaries from a previously published
+image rather than a tarball, using the same hash comparison `verify-image.sh`
+already performs.
+
 ## Invariants
 
-1. **The container build has no network access.** `make build` passes
-   `--network=none`. Every input comes from `vendor/`, committed to git. If a
-   change requires network during build, the change is wrong.
-2. **Threshold signature verification.** `SHA256SUMS` must carry at least
+1. **No build step touches the network.** `make build` passes `--network=none`
+   and reads only from `upstream/`, which `make fetch` stages beforehand. If a
+   change requires network *during the build*, the change is wrong. Note this is
+   input-hermeticity, not an airgap: resolving the base images still needs a
+   registry unless they are already cached locally.
+2. **The signed metadata is committed; the tarball is not.** `SHA256SUMS` and
+   `SHA256SUMS.asc` (~11 KB) live in git and are the trust anchor. The release
+   tarball is gitignored and fetched on demand — it is self-authenticating
+   against the committed signed sums, so committing ~86 MB per release per arch
+   would add no integrity, only permanent history.
+3. **Threshold signature verification.** `SHA256SUMS` must carry at least
    `MIN_GOOD_SIGS` (**default 6**) valid signatures from keys on the allowlist
    in `keys/trusted-fingerprints.txt`. This is the same *mechanism* upstream
    tooling uses, at the same threshold `bitcoin/bitcoin` uses; it is table
    stakes, not a differentiator. The default lives in three places — Makefile,
    Dockerfile `ARG`, and `scripts/verify.sh` — change all three together. Do not
    reduce it to 1.
-3. **Importable is not trusted.** Presence in `keys/` gets a key imported;
-   presence in `trusted-fingerprints.txt` is what makes its signature count.
-   Adding a fingerprint is a reviewed commit with a reason.
-4. **The runtime base image is pinned by digest**, never by tag.
-5. **Verification logic lives in two places** (`Dockerfile` and
-   `scripts/verify.sh`) deliberately, so CI and the build agree. Change one,
-   change the other. Task below to add a test that they match.
+4. **Importable is not trusted, and the two sets are kept equal anyway.**
+   Presence in `keys/` gets a key imported; presence in
+   `trusted-fingerprints.txt` is what makes its signature count. The check stays
+   because it is what stops a stray key file from mattering — but we do not rely
+   on it as a filter. `keys/` holds **only** the allowlisted keys, because a
+   non-allowlisted key cannot change the outcome and is just another blob gpg
+   parses at verification time. Adding a signer is one reviewed commit carrying
+   both the `.asc` and the fingerprint; `check-pins.sh` fails if an allowlisted
+   fingerprint has no key file, since that failure is otherwise silent.
+5. **The runtime base image is pinned by digest**, never by tag.
+6. **Verification logic lives in two places** (`Dockerfile` and
+   `scripts/verify.sh`) deliberately, so a standalone check and the image build
+   agree. Change one, change the other. Task below to add a test that they
+   match. Note the standalone runner is a human today — there is no CI yet.
 
 ## Layout
 
 ```
 Dockerfile                       two stages: verifier (throwaway) -> runtime (distroless)
 Makefile                         fetch / verify / build / smoke / verify-image / sign / attest
-scripts/fetch-release.sh         connected-machine: download release into vendor/
+scripts/fetch-release.sh         connected-machine: stage release into upstream/
 scripts/verify.sh                threshold sig check + digest check + provenance.json
 scripts/verify-image.sh          extract binaries from any image, compare to verified tarball
-scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs (read its header)
-keys/                            armored builder pubkeys + trusted-fingerprints.txt
-vendor/                          committed release tarball, SHA256SUMS, SHA256SUMS.asc
+scripts/verify-contents.sh       prove EVERY file in the image is accounted for
+scripts/check-pins.sh            assert duplicated values agree across files
+scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs
+scripts/fetch-sums-from-guix-sigs.sh  recover signed sums when upstream withdraws a release (read its header)
+scripts/cross-check-verify-py.sh second opinion on the threshold from Core's own verify.py
+keys/                            armored pubkeys for the allowlisted builders ONLY,
+                                 plus trusted-fingerprints.txt. Keep the two in sync.
+upstream/                        committed: SHA256SUMS + .asc. Gitignored: the tarball.
+                                 Named for where the bytes come from, not how they
+                                 are stored — only the sums are actually vendored.
 ```
 
 ## Workflow
@@ -104,11 +181,14 @@ vendor/                          committed release tarball, SHA256SUMS, SHA256SU
 scripts/import-builder-keys.sh
 $EDITOR keys/trusted-fingerprints.txt.candidate   # prune to what you can corroborate
 mv keys/trusted-fingerprints.txt{.candidate,}
+# then delete the .asc files you did not keep — keys/ tracks the allowlist
+make check-pins
 
 # per version
-make fetch VERSION=31.1
-git add vendor/ && git commit -m "vendor: bitcoin core 31.1"
-make build smoke verify-image
+make fetch VERSION=31.1          # downloads, verifies, cross-checks against verify.py
+git add upstream/SHA256SUMS upstream/SHA256SUMS.asc
+git commit -m "upstream: bitcoin core 31.1 sums"  # the tarball is gitignored
+make build smoke verify-image verify-contents
 docker push ...
 make sbom sign attest COSIGN_KEY=...
 make digest          # publish this; consumers pin it
@@ -133,12 +213,72 @@ doing something clever, this catches it.
 
 ## Open work
 
+### Done since the initial commit
+
+- [x] **Cross-check against Core's `verify.py`** — `scripts/cross-check-verify-py.sh`,
+      wired into `fetch-release.sh` (skippable with `SKIP_CROSS_CHECK=1`) and
+      exposed as `make cross-check`. Downloads verify.py at a pinned commit
+      (`facaf5621446…`, sha256 `f35fbf10…`; bumping either is a reviewed
+      commit), builds a keyring from **only** the allowlisted fingerprints so
+      both tools see the same candidate set, runs `verify.py bin`, and compares
+      against what `scripts/verify.sh` actually reports. Verified 2026-09-12
+      against real 31.1 artifacts: both say 11, verdict pass. Reverting
+      verify.sh to the pre-fix `$3` parser makes it report 11 vs 7 and exit 1,
+      so it demonstrably catches the bug that motivated it.
+
+      Two traps found while building it, both worth remembering.
+      `--min-good-sigs` is a **global** option on verify.py and must precede the
+      `bin` subcommand or argparse rejects it. And the first draft recomputed our
+      signer set inline and forgot to intersect it with the allowlist — it
+      reported 11 either way and would have caught nothing. **A cross-check must
+      invoke the real gate, not a third re-derivation of it.**
+
+### BROKEN — `make build` does not work
+
+- [ ] **The verifier stage needs the network the build forbids.** Proven by
+      running it 2026-09-12 with real 31.1 artifacts and a populated allowlist:
+      `make build` fails at step 2 with
+      `E: Package 'gnupg' has no installation candidate`, exit 100. The
+      Dockerfile opens the verifier stage with
+      `RUN apt-get update && apt-get install -y gnupg ca-certificates`, while the
+      Makefile passes `--network=none`. Those cannot both hold. **`make build`
+      has therefore never succeeded**, and invariant 1 is contradicted by the
+      Dockerfile itself, not merely unproven.
+
+      **Recommended fix: drop `gpg` for `gpgv`.** `debian:bookworm-slim` already
+      ships `/usr/bin/gpgv` — no apt, no network. `gpgv` is purpose-built for
+      verifying a detached signature against a fixed keyring, which is exactly
+      this job, and it supports `--status-fd`. Verified 2026-09-12 inside
+      `debian:bookworm-slim` with `--network=none`: it emits the same 11 primary
+      fingerprints our parser expects. It needs a binary keyring rather than
+      armored files, so `keys/` gains a generated `trusted-keyring.gpg` built on
+      the host from the `.asc` files (regenerate-and-diff keeps it reviewable).
+      Note `gpgv` ignores trust entirely and only checks signatures against the
+      keyring — which suits us, since trust is the fingerprint allowlist applied
+      afterwards.
+
+      Alternatives considered: vendor the `.deb`s and `dpkg -i` offline (more
+      moving parts); drop `--network=none` (abandons invariant 1); verify only on
+      the host (abandons the defence-in-depth the duplication exists for).
+
 ### Do these first, immediately after the initial commit lands
 
 These three are the priority. The two attestation items are what would make this
 repo's guarantees genuinely stronger than what is already available elsewhere;
 everything below this section is maintenance by comparison.
 
+- [ ] **Publish the image as a release on this repo, and make that the archive.**
+      This is the answer to release withdrawal (30.0 and 30.1 are already gone
+      from bitcoincore.org) and the reason the tarball is not in git. Decide
+      GHCR vs GitHub Releases attachments, set `REGISTRY` in the Makefile — it
+      is still the placeholder `registry.example.com/bitcoin` — and retain old
+      tags deliberately rather than by default.
+- [ ] **Add a rebuild-from-published-image path.** Publishing preserves the old
+      image but not the ability to put that Bitcoin version on a *new* base,
+      which is exactly what a distroless CVE demands. Source the binaries from a
+      previously published image instead of a tarball, comparing hashes the way
+      `verify-image.sh` already does, so a base bump does not depend on upstream
+      still hosting the release.
 - [ ] **Run `make verify-upstream` once, after bootstrap.** Its `BIN_PATH` was
       wrong until 2026-09-12, so it has never executed successfully. It is not
       blocked on an upstream release — Core 31.1 shipped 2026-07-07 and
@@ -146,30 +286,42 @@ everything below this section is maintenance by comparison.
       `SHA256SUMS.asc` today. It is blocked only on `keys/` being populated and
       `make fetch VERSION=31.1` having been run. This is the cheapest end-to-end
       exercise of `verify-image.sh` available, so do it first.
-- [ ] **Contents-completeness attestation.** *This is the answer to "can we do
-      attestation better than bitcoin/bitcoin", and the answer is yes.* Today
-      `verify-image.sh` proves two named binaries are the right bytes; it proves
-      nothing about what *else* is in the image, which is exactly the gap their
-      docs warn about ("non-trivial to verify the authenticity of the bitcoin
-      core binaries inside"). Close it with `scripts/verify-contents.sh`:
-      `docker export` the runtime image to a flat rootfs, hash every regular
-      file, then subtract (a) the file set of the pinned base image digest,
-      exported the same way, and (b) the files we deliberately add — binaries
-      and libs from the verified tarball, plus the provenance breadcrumbs.
-      **Assert the remainder is empty, and that no base file was modified in
-      place.** Emit the full manifest as JSON and attach it with `cosign attest`
-      under its own predicate type, so a consumer can re-derive "these N files,
-      these hashes, nothing else" offline from the image alone. Measured
-      2026-09-12: `gcr.io/distroless/cc-debian12:nonroot` exports to 1788 tar
-      entries / 1288 regular files, so the *base* set is too large to eyeball —
-      but it is a fixed input pinned by digest, and the **delta** over it is the
-      handful of files we add. That delta is what a reviewer reads. Also bump
-      buildx from `--provenance=true` (mode=min) to `mode=max` while here, which
-      records build args and materials for free.
+- [x] **Contents-completeness attestation — `scripts/verify-contents.sh`.**
+      *This is the answer to "can we do attestation better than
+      bitcoin/bitcoin", and the answer is yes.* `verify-image.sh` proves two
+      named binaries are the right bytes; it proves nothing about what *else* is
+      in the image, which is exactly the gap their docs warn about. This script
+      closes it by subtraction: export the image rootfs, hash every regular file
+      and record every symlink target, then classify each against (a) the base
+      image named by the image's own
+      `org.opencontainers.image.base.name` label and (b) files from the verified
+      tarball. Anything left over is UNACCOUNTED; a base path whose content
+      differs is MODIFIED. Both fail the run. Emits `contents-manifest.json`,
+      attached by `make attest` under its own predicate type so a consumer can
+      re-derive "these N files, these hashes, nothing else" offline.
+
+      **Tested 2026-09-12, fails closed** — three fixtures built on the
+      distroless base: unmodified (1665 entries, all accounted, exit 0), one
+      extra file (UNACCOUNTED, exit 1), one modified `/etc/passwd` (MODIFIED,
+      exit 1). Measured base composition: 1788 tar entries = 1288 regular files
+      + 377 symlinks + 123 directories; the script covers the 1665
+      content-bearing entries and ignores directories.
+
+      **Still unproven:** the tarball branch. The code that hashes
+      `bin/<SHIP_BINARIES>` and `lib/` out of the tarball has never run against a
+      real bitcoind image, because `make build` is broken. Re-run it after that
+      is fixed.
+
+      **Known hole:** `GENERATED_PATHS` trusts the two provenance breadcrumbs by
+      path, not by hash, because their content is build-specific. Keep that list
+      short — every entry is a hole in the guarantee.
+
+      Remaining sub-task: bump buildx from `--provenance=true` (mode=min) to
+      `mode=max`, which records build args and materials for free.
 - [ ] **Reproducible rebuild agreement.** The strongest attestation claim
       available to this repo, and one `bitcoin/bitcoin` does not make: two people
       building the same commit independently get the same image digest. The
-      pieces are already in place — `--network=none`, vendored inputs,
+      pieces are already in place — `--network=none`, staged inputs,
       `SOURCE_DATE_EPOCH` pinned to the commit. What is untested is whether the
       digest actually lands identical; layer timestamps are the usual culprit.
       Try `--output type=image,rewrite-timestamp=true`, then have a second
@@ -179,34 +331,76 @@ everything below this section is maintenance by comparison.
 ### Everything else
 
 - [ ] **arm64.** `TARGET_TRIPLE=aarch64-linux-gnu` should work but is untested.
-      Decide multi-arch manifest vs. separate single-arch tags.
-- [ ] **Confirm what the tarball actually ships.** Run
-      `tar -tzf vendor/bitcoin-*.tar.gz | grep -E '/(bin|lib)/'` and reconcile
-      with `SHIP_BINARIES` in the Dockerfile. Core 30.0 really did change the
-      layout (verified 2026-09-12 against the 30.0 release notes): it added a
-      `libexec/` directory holding `bitcoin-node` and `bitcoin-gui`, moved
-      `test_bitcoin` there out of `bin/`, and introduced a unified `bitcoin`
-      wrapper command in `bin/`. **Our Dockerfile copies only `/unpack/bin/` and
-      `/unpack/lib/` — it never looks at `libexec/`.** Confirm `bitcoind` in
-      31.1 is still a standalone binary in `bin/` and does not exec anything out
-      of `libexec/`, or the image ships a `bitcoind` that cannot start. Also
-      check whether it dynamically links `libbitcoinkernel.so` — if so,
-      `/usr/local/lib` must be populated and `make smoke` is what proves it
-      resolves.
-- [ ] **Pin the runtime base by digest.** Invariant 4 says the runtime base is
-      pinned by digest, never by tag — but `RUNTIME_BASE` in both the Dockerfile
-      and the Makefile is still the tag `gcr.io/distroless/cc-debian12:nonroot`.
-      Resolved 2026-09-12 (amd64):
+      Decide multi-arch manifest vs. separate single-arch tags. The pinned
+      distroless digest is already a multi-arch index, so the base is not the
+      blocker. A `TARGETARCH`->triple mapping inside the Dockerfile
+      (`amd64`->`x86_64-linux-gnu`, `arm64`->`aarch64-linux-gnu`) is the
+      conventional approach and lets buildx drive it rather than a make var.
+- [x] **Confirm what the tarball actually ships.** Answered 2026-09-12 by
+      unpacking the real 31.1 amd64 tarball.
+
+      Top level: `bin/ libexec/ share/ README.md bitcoin.conf`. **There is no
+      `lib/` directory at all.** `bin/` holds 7 binaries — `bitcoin` (the 2 MB
+      unified wrapper), `bitcoin-cli`, `bitcoin-qt`, `bitcoin-tx`,
+      `bitcoin-util`, `bitcoin-wallet`, `bitcoind`. `libexec/` holds
+      `bitcoin-gui`, `bitcoin-node` (22 MB), `test_bitcoin`, confirming the 30.0
+      layout change.
+
+      **`bitcoind` is a real 17.8 MB standalone binary, not a wrapper**, and
+      `ldd` shows it links only `libpthread`, `libm`, `libc` and `ld-linux` —
+      **glibc only, no `libbitcoinkernel.so`**. Same for `bitcoin-cli`. So
+      `SHIP_BINARIES="bitcoind bitcoin-cli"` is correct and self-contained, and
+      nothing from `libexec/` is needed.
+
+      **Consequence: the `lib/` handling in the Dockerfile is dead code.** The
+      `if [ -d /unpack/lib ]` branch never fires, `/out/lib/` ships only
+      `.keep`, and `LD_LIBRARY_PATH=/usr/local/lib` points at an effectively
+      empty directory. Harmless, but it implies a dependency that does not
+      exist. Remove it when fixing the apt/`--network=none` breakage above —
+      same file, same edit session. Re-check on every minor version bump: this
+      is a property of 31.1, not a guarantee.
+- [x] **Pin the runtime base by digest.** Done 2026-09-12.
       `gcr.io/distroless/cc-debian12@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f`
-      — re-resolve before pinning rather than trusting this line, since the tag
-      moves. Pin it in both places. Re-run
-      `make smoke verify-image` after any base bump; if the runtime UID ever
-      changes, update the consumer facts above.
+      in both the Dockerfile `ARG` and the Makefile. That digest is an OCI image
+      **index** (amd64, arm64/v8, arm/v7, s390x), so multi-arch survives the pin
+      — which the arm64 task will need. It is the `:nonroot` variant; the name no
+      longer says so, which is the readability cost of pinning, hence the comment
+      above the ARG. `scripts/check-pins.sh` now enforces that both files agree
+      and that neither is on a floating tag. Verified end to end: a test image
+      carrying the digest in its `org.opencontainers.image.base.name` label is
+      resolved and fully accounted for by `verify-contents.sh` with no `BASE=`
+      override.
 - [ ] **STIG/hardening pass.** Distroless gets most of this for free, but the
       scanner wants explicit evidence. This is why the repo exists — do not let
       it slip behind the plumbing tasks.
-- [ ] **Test that Dockerfile and verify.sh agree.** Feed both a deliberately
-      under-signed `SHA256SUMS` and assert both fail.
+- [ ] **Test that Dockerfile and verify.sh agree.** Partially covered as of
+      2026-09-12: `scripts/check-pins.sh` (wired into `make verify`) asserts the
+      *values* agree — `MIN_GOOD_SIGS` across all three files, `RUNTIME_BASE`
+      across two — and is tested against injected drift in both. What remains is
+      the *logic*: feed both a deliberately under-signed `SHA256SUMS` and assert
+      both fail. Equal thresholds do not prove equal parsing.
+- [ ] **Does an expired or revoked key's signature count toward our
+      threshold?** Open question, not a known bug — do not assume either answer.
+      What is known: verifying 31.1 emitted **4 `KEYEXPIRED` status lines**
+      alongside 11 `VALIDSIG`, and Core's `verify.py` deliberately folds
+      `EXPKEYSIG` and `REVKEYSIG` into its good tally (lines 185-193), so its 11
+      and our 11 may agree for different reasons. What is NOT known: whether gpg
+      emits `VALIDSIG` for a signature from an expired or revoked key, and so
+      whether any of our 11 came from one. Those `KEYEXPIRED` lines may refer to
+      unrelated keys in the keyring or to expired subkeys, and nothing has been
+      traced. Determine it by construction: make a throwaway key, sign a file,
+      expire the key, and see what `--status-fd` prints. Then decide policy — a
+      revoked builder key almost certainly should not count, and if `VALIDSIG`
+      alone cannot distinguish it, the parser needs `EXPKEYSIG`/`REVKEYSIG`
+      handling in both places.
+- [ ] **Annotate duplicate keys in `import-builder-keys.sh`.** Its `OWNER` map
+      is keyed by fingerprint, so when two builder-key files carry the same
+      primary key the second silently overwrites the first's name. guix.sigs has
+      exactly one such pair today (`TheCharlatan.gpg` and `sedited.gpg`, same
+      person), and the candidate list annotated it only as `# sedited` — the
+      less recognisable of the two names, which is the opposite of helpful when
+      the whole point of that comment is human recognition. Make it collect all
+      names per fingerprint and emit `# TheCharlatan / sedited`.
 - [ ] **Negative tests generally.** Tampered tarball, sig from an off-allowlist
       key, threshold of 5 when 6 is required, a binary swapped inside a test
       image so `verify-image.sh` is proven to catch it. A verification gate with
@@ -221,6 +415,25 @@ clones guix.sigs, which is where upstream's own tooling points and where key
 additions are reviewable git commits. That is better than a keyserver lookup,
 but the trust still comes from the human review step its header describes, not
 from the script.
+
+**`VALIDSIG` field 3 is the SIGNING key, not the primary key.** Found
+2026-09-12 while bootstrapping, and it was a live bug in both parsers. Several
+Core builders sign with a signing subkey — on 31.1 that is fanquake, Emzy,
+willcl-ark and TheCharlatan. `import-builder-keys.sh` writes **primary**
+fingerprints to the allowlist, so matching on `$3` silently discarded those four
+valid signatures: 7 accepted instead of 11. It fails safe rather than open (valid
+signatures get dropped, never forged ones accepted), but the margin over
+`MIN_GOOD_SIGS=6` was 1 instead of 5, and two more builders adopting subkey
+signing would have started failing good releases. Both parsers now read the last
+field, which is the primary fingerprint:
+
+```awk
+awk '/^\[GNUPG:\] VALIDSIG/ { print (NF >= 12 ? $NF : $3) }'
+```
+
+Deduping on the primary also means one builder signing with two subkeys counts
+once. **If anyone ever changes this back to `$3`, the threshold silently
+tightens and good releases start failing.**
 
 **`gpg --verify` exits 0 on one good signature.** That is why `verify.sh` and
 the Dockerfile parse `--status-fd` output rather than checking the exit code. If
