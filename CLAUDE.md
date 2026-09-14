@@ -29,8 +29,11 @@ in CI, so the identical-bytes claim covers only the Debian-based tags.
 
 So this repo is **not** more cryptographically rigorous than theirs, and for
 the Debian-based tags the binaries in both images are the same upstream bytes.
-Anyone who tells you otherwise — including earlier versions of this file — is
-overselling it.
+**Measured 2026-09-14**, not assumed: `make verify-upstream` extracts from
+`bitcoin/bitcoin:31.1` and gets `bitcoind 986e63b3…88a08` and
+`bitcoin-cli 4e3a0fde…86034` — byte-identical to what `make verify-image`
+reports for our own image. Anyone who tells you otherwise — including earlier
+versions of this file — is overselling it.
 
 What this repo actually gives you:
 
@@ -164,11 +167,13 @@ scripts/verify.sh                threshold sig check + digest check + provenance
 scripts/verify-image.sh          extract binaries from any image, compare to verified tarball
 scripts/verify-contents.sh       prove EVERY file in the image is accounted for
 scripts/check-pins.sh            assert duplicated values agree across files
+scripts/build-keyring.sh         regenerate keys/trusted-keyring.gpg from keys/*.asc
 scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs
 scripts/fetch-sums-from-guix-sigs.sh  recover signed sums when upstream withdraws a release (read its header)
 scripts/cross-check-verify-py.sh second opinion on the threshold from Core's own verify.py
 keys/                            armored pubkeys for the allowlisted builders ONLY,
-                                 plus trusted-fingerprints.txt. Keep the two in sync.
+                                 trusted-fingerprints.txt, and trusted-keyring.gpg
+                                 (derived; what the container build verifies against)
 upstream/                        committed: SHA256SUMS + .asc. Gitignored: the tarball.
                                  Named for where the bytes come from, not how they
                                  are stored — only the sums are actually vendored.
@@ -233,39 +238,81 @@ doing something clever, this catches it.
       reported 11 either way and would have caught nothing. **A cross-check must
       invoke the real gate, not a third re-derivation of it.**
 
-### BROKEN — `make build` does not work
+### Fixed 2026-09-14 — the build works
 
-- [ ] **The verifier stage needs the network the build forbids.** Proven by
-      running it 2026-09-12 with real 31.1 artifacts and a populated allowlist:
-      `make build` fails at step 2 with
-      `E: Package 'gnupg' has no installation candidate`, exit 100. The
-      Dockerfile opens the verifier stage with
-      `RUN apt-get update && apt-get install -y gnupg ca-certificates`, while the
-      Makefile passes `--network=none`. Those cannot both hold. **`make build`
-      has therefore never succeeded**, and invariant 1 is contradicted by the
-      Dockerfile itself, not merely unproven.
+- [x] **The verifier stage no longer needs the network.** `apt-get install gnupg`
+      is gone; the stage uses `gpgv`, which `debian:bookworm-slim` already ships.
+      `gpgv` cannot import, so it verifies against `keys/trusted-keyring.gpg`,
+      generated on the host by `scripts/build-keyring.sh` from the same
+      `keys/*.asc` the host tooling uses. The allowlist intersection is
+      unchanged and still applied afterwards, so a key in the keyring that is not
+      allowlisted still does not count — invariant 4 survives the switch.
+      `check-pins.sh` asserts every allowlisted fingerprint is in the keyring,
+      tested against a deliberately 9-key keyring.
 
-      **Recommended fix: drop `gpg` for `gpgv`.** `debian:bookworm-slim` already
-      ships `/usr/bin/gpgv` — no apt, no network. `gpgv` is purpose-built for
-      verifying a detached signature against a fixed keyring, which is exactly
-      this job, and it supports `--status-fd`. Verified 2026-09-12 inside
-      `debian:bookworm-slim` with `--network=none`: it emits the same 11 primary
-      fingerprints our parser expects. It needs a binary keyring rather than
-      armored files, so `keys/` gains a generated `trusted-keyring.gpg` built on
-      the host from the `.asc` files (regenerate-and-diff keeps it reviewable).
-      Note `gpgv` ignores trust entirely and only checks signatures against the
-      keyring — which suits us, since trust is the fingerprint allowlist applied
-      afterwards.
+      The keyring build is deterministic (fixed fingerprint order), so
+      `scripts/build-keyring.sh && git diff keys/trusted-keyring.gpg` is a real
+      review. Verified `mawk` — Debian's default awk, not gawk — handles the
+      `VALIDSIG` parse identically.
 
-      Alternatives considered: vendor the `.deb`s and `dpkg -i` offline (more
-      moving parts); drop `--network=none` (abandons invariant 1); verify only on
-      the host (abandons the defence-in-depth the duplication exists for).
+- [x] **Dead `lib/` handling removed.** 31.1 ships no `lib/`, so the
+      `if [ -d /unpack/lib ]` branch, the `/out/lib/` copy and
+      `LD_LIBRARY_PATH=/usr/local/lib` all advertised a dependency that does not
+      exist. Gone.
 
-### Do these first, immediately after the initial commit lands
+- [x] **`ARG RUNTIME_BASE` re-declared in the runtime stage.** A latent bug that
+      shipped in PR #2: a global `ARG` above the first `FROM` is visible to
+      `FROM` instructions but **not inside a stage**, so
+      `org.opencontainers.image.base.name` silently expanded to `""`. That broke
+      `verify-contents.sh` entirely, since it resolves the base from that label.
+      It went unnoticed because the earlier end-to-end test used a hand-built
+      fixture with the label set manually — which validated the script but never
+      validated that the Dockerfile produces the label. **A fixture that supplies
+      the thing under test proves nothing about the thing that must supply it.**
 
-These three are the priority. The two attestation items are what would make this
-repo's guarantees genuinely stronger than what is already available elsewhere;
-everything below this section is maintenance by comparison.
+- [x] **`make smoke` now asserts.** It previously backgrounded `docker run`,
+      slept and killed the client PID, so it always exited 0. It now runs the
+      node with a deadline and requires `init message: Done loading`. The first
+      run that could fail, did: `/data` is not writable by 65532, because the
+      declared `VOLUME` does not exist in the distroless base and comes up
+      root-owned. That is the consumer caveat the README documents, now
+      confirmed rather than inferred. The target mounts a tmpfs owned by 65532 —
+      the `--tmpfs` there is load-bearing, not incidental.
+
+**First full green run, 2026-09-14:**
+
+```
+make build           image built, --network=none, 10 accepted signers in-build
+make smoke           bitcoind v31.1.0 + bitcoin-cli run; regtest boot: OK
+make verify-image    MATCH bitcoind, MATCH bitcoin-cli
+make verify-contents 1665 base + 2 verified + 2 generated = 1669, 0 UNACCOUNTED
+```
+
+### Do these next
+
+With the build working and every gate green, the remaining priority items are
+about publishing and proving. `verify-contents.sh` is the thing that makes this
+repo's guarantees stronger than what is available elsewhere, and it now runs for
+real — what is left is getting the result published and signed.
+
+- [ ] **`verify-sig` does not verify what `attest` attaches.** `attest` attaches
+      three predicates — provenance, SBOM, and the contents manifest — but
+      `verify-sig` checks only the provenance one. So the round-trip claim is
+      incomplete, and the **contents manifest, the thing that makes this repo's
+      guarantee distinctive, has no verification path at all**. Partly
+      self-inflicted: the third `attest` call was added in PR #2 without
+      extending `verify-sig`. Fix it when the signing work lands, and prove it by
+      round-tripping all three.
+
+      None of `sign` / `attest` / `verify-sig` have ever run. They need a
+      registry, a pushed image and a key. **Exercise them locally first** —
+      `docker run -d -p 5000:5000 registry:2`, `cosign generate-key-pair`, then
+      `make build push sign attest verify-sig REGISTRY=localhost:5000/bitcoin` —
+      before pointing anything at a real registry. `make sbom` is testable today
+      on its own; syft scans a local image and needs no registry. Note
+      `RepoDigests` *is* populated for a `--load`ed buildx image, so these
+      targets fail on the unreachable `registry.example.com`, not on a missing
+      digest.
 
 - [ ] **Publish the image as a release on this repo, and make that the archive.**
       This is the answer to release withdrawal (30.0 and 30.1 are already gone
@@ -279,13 +326,16 @@ everything below this section is maintenance by comparison.
       previously published image instead of a tarball, comparing hashes the way
       `verify-image.sh` already does, so a base bump does not depend on upstream
       still hosting the release.
-- [ ] **Run `make verify-upstream` once, after bootstrap.** Its `BIN_PATH` was
-      wrong until 2026-09-12, so it has never executed successfully. It is not
-      blocked on an upstream release — Core 31.1 shipped 2026-07-07 and
-      `bitcoincore.org/bin/bitcoin-core-31.1/` has the tarball, `SHA256SUMS` and
-      `SHA256SUMS.asc` today. It is blocked only on `keys/` being populated and
-      `make fetch VERSION=31.1` having been run. This is the cheapest end-to-end
-      exercise of `verify-image.sh` available, so do it first.
+- [x] **`make verify-upstream` run, 2026-09-14.** It had never executed —
+      `BIN_PATH` was wrong until 2026-09-12, then it was blocked on the
+      bootstrap. Both binaries MATCH:
+      `bitcoind 986e63b3…88a08`, `bitcoin-cli 4e3a0fde…86034`.
+
+      **Those are the same hashes `make verify-image` reports for our own
+      image.** So "the binaries in both images are identical bytes" — the claim
+      the entire justification section rests on — is now *measured*, not
+      inherited from documentation. If that ever stops being true, this target
+      is what says so.
 - [x] **Contents-completeness attestation — `scripts/verify-contents.sh`.**
       *This is the answer to "can we do attestation better than
       bitcoin/bitcoin", and the answer is yes.* `verify-image.sh` proves two
@@ -307,10 +357,9 @@ everything below this section is maintenance by comparison.
       + 377 symlinks + 123 directories; the script covers the 1665
       content-bearing entries and ignores directories.
 
-      **Still unproven:** the tarball branch. The code that hashes
-      `bin/<SHIP_BINARIES>` and `lib/` out of the tarball has never run against a
-      real bitcoind image, because `make build` is broken. Re-run it after that
-      is fixed.
+      **Proven end to end 2026-09-14** against the real image: 1665 base files
+      + 2 verified binaries + 2 generated breadcrumbs = 1669 entries, zero
+      unaccounted. The tarball branch now executes for real.
 
       **Known hole:** `GENERATED_PATHS` trusts the two provenance breadcrumbs by
       path, not by hash, because their content is build-specific. Keep that list
@@ -441,10 +490,13 @@ anyone ever simplifies that to an exit-code check, the threshold is gone. (This
 is a note about our implementation, not a criticism of upstream tooling, which
 handles this correctly.)
 
-**`make smoke` is not optional.** The build can succeed and produce an image
-whose binaries cannot load because the runtime base lacks a shared library.
-There is no shell in the image to debug interactively, so the smoke test is the
-feedback loop. This matters more as the base image changes, which it will.
+**`make smoke` is not optional, and it must be able to fail.** The build can
+succeed and produce an image whose binaries cannot load, or which cannot write
+its datadir. There is no shell in the image to debug interactively, so smoke is
+the feedback loop. It was decorative until 2026-09-14 — backgrounding
+`docker run` and killing the client PID always exits 0 — and the first run that
+could actually fail immediately found the `/data` ownership problem. If anyone
+simplifies it back to a sleep-and-kill, it stops testing anything.
 
 **Allowlist file format.** One fingerprint per line, optional `# comment` after
 it. Both parsers strip inline comments and whitespace and uppercase the result —

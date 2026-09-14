@@ -189,7 +189,9 @@ scripts/cross-check-verify-py.sh second opinion from Core's own verify.py
 scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs
 scripts/fetch-sums-from-guix-sigs.sh  recover signed sums for a withdrawn release
 scripts/check-pins.sh            assert duplicated values agree across files
-keys/                            pubkeys for the allowlisted builders only + the allowlist
+scripts/build-keyring.sh         regenerate the keyring the container build uses
+keys/                            pubkeys for the allowlisted builders, the allowlist,
+                                 and the derived keyring the build verifies against
 upstream/                        committed: SHA256SUMS + .asc. Gitignored: the tarball.
 ```
 
