@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Independently verify that the binaries inside a container image are byte-for-byte
-# the ones from the signature-verified upstream release tarball in vendor/.
+# the ones from the signature-verified upstream release tarball in upstream/.
 #
 # This works on ANY bitcoind image, not just ours. That is the point:
 #
@@ -17,7 +17,7 @@
 # SHA256SUMS lists tarball hashes, not per-binary hashes, so the comparison is
 # against binaries extracted from the verified tarball rather than against
 # SHA256SUMS directly. Run scripts/verify.sh first — this script assumes the
-# vendored tarball has already cleared the signature threshold.
+# staged tarball has already cleared the signature threshold.
 #
 #   usage: scripts/verify-image.sh <image-ref> [version] [triple]
 #
@@ -30,7 +30,7 @@ BIN_PATH="${BIN_PATH:-/usr/local/bin}"
 BINARIES="${BINARIES:-bitcoind bitcoin-cli}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TARBALL="${REPO_ROOT}/vendor/bitcoin-${VERSION}-${TRIPLE}.tar.gz"
+TARBALL="${REPO_ROOT}/upstream/bitcoin-${VERSION}-${TRIPLE}.tar.gz"
 [[ -f "${TARBALL}" ]] || { echo "missing ${TARBALL} — run scripts/fetch-release.sh first" >&2; exit 1; }
 
 tmp="$(mktemp -d)"

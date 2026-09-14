@@ -1,3 +1,11 @@
+# Release tarballs are NOT committed. SHA256SUMS + SHA256SUMS.asc are, and
+# they are signed by the builder threshold — that is the trust anchor, and it
+# makes any later download of the tarball verifiable. Committing ~86MB of
+# already-compressed bytes per release per arch adds no integrity, only
+# permanent history. See 'Why the tarball is not committed' in CLAUDE.md.
+upstream/*.tar.gz
+
 provenance.json
+contents-manifest.json
 sbom.spdx.json
 keys/trusted-fingerprints.txt.candidate

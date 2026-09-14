@@ -1,16 +1,20 @@
 # bitcoind-container
 
 A Bitcoin Core container image built from signature-verified upstream release
-binaries, on a distroless base, with every input vendored into git so the build
-is hermetic and rebuildable offline.
+binaries, on a distroless base. The signed `SHA256SUMS` is committed, the build
+itself never touches the network, and the published image carries a signed
+manifest of everything inside it.
 
 Scope is deliberately narrow: this repo **builds, verifies, and publishes an
 image**. It says nothing about how you deploy or operate a node.
 
-> **Status: scaffolding.** The build pipeline is written but not yet
-> bootstrapped — `keys/` carries no trusted fingerprints and `vendor/` carries
-> no release, so `make verify` and `make build` fail closed by design. See
-> [Bootstrapping](#bootstrapping) to make it functional.
+> **Status: verification works; the image build does not.** The allowlist is
+> populated with 10 Bitcoin Core builders and `make verify` passes against real
+> 31.1 artifacts — 10 accepted signatures against a threshold of 6, independently
+> confirmed by Core's own `verify.py`. But `make build` is currently **broken**:
+> the Dockerfile's verifier stage runs `apt-get` while the build passes
+> `--network=none`, which cannot both hold. See [Known gaps](#known-gaps). There
+> is no CI yet either; every target below is run by hand.
 
 ## Why this exists
 
@@ -48,9 +52,9 @@ What it actually gives you:
    Verified against the base image on 2026-09-12: no shell, no package manager,
    and `/etc/passwd` carries exactly
    `nonroot:x:65532:65532:nonroot:/home/nonroot:/sbin/nologin`.
-2. **Offline rebuildability.** Vendored artifacts in git mean you can rebuild
-   from what is already behind the wire. Pulling from Docker Hub means you
-   cannot.
+2. **Artifact ownership.** You publish and retain the image yourself. Upstream
+   does withdraw releases — 30.0 and 30.1 are already gone from bitcoincore.org
+   — so the image you published, not a third party's registry, is the archive.
 3. **Lifecycle ownership.** Version cadence, signing under your own key, SBOM,
    and no dependency on a third-party Docker Hub account continuing to exist.
    You would have to re-sign and re-scan someone else's image anyway.
@@ -65,16 +69,22 @@ was already fine.
 
 ## Design invariants
 
-1. **The container build has no network access.** `make build` passes
-   `--network=none`. Every input comes from `vendor/`, committed to git.
-2. **Threshold signature verification.** `SHA256SUMS` must carry at least
+1. **No build step touches the network.** `make build` passes `--network=none`
+   and reads only from `upstream/`, staged beforehand by `make fetch`.
+2. **The signed metadata is committed; the tarball is not.** `SHA256SUMS` and
+   `SHA256SUMS.asc` (~11 KB) are the trust anchor and live in git. The tarball is
+   gitignored — it is self-authenticating against those signed sums, so
+   committing ~86 MB per release per architecture would add no integrity.
+3. **Threshold signature verification.** `SHA256SUMS` must carry at least
    `MIN_GOOD_SIGS` (default 6) valid signatures from keys on the allowlist in
    `keys/trusted-fingerprints.txt`.
-3. **Importable is not trusted.** Presence in `keys/` gets a key imported;
+4. **Importable is not trusted.** Presence in `keys/` gets a key imported;
    presence in `trusted-fingerprints.txt` is what makes its signature count.
-4. **The runtime base image is pinned by digest**, never by tag.
-5. **Verification logic is intentionally duplicated** in the `Dockerfile` and
-   `scripts/verify.sh`, so that CI and the image build enforce the same rule.
+5. **The runtime base image is pinned by digest**, never by tag.
+6. **Verification logic is intentionally duplicated** in the `Dockerfile` and
+   `scripts/verify.sh`, so that a standalone check — on an air-gapped host, as a
+   pre-commit gate, or in future CI — and the image build enforce the same
+   rule.
 
 ## Bootstrapping
 
@@ -89,14 +99,19 @@ scripts/import-builder-keys.sh
 # keeping it — a key you cannot vouch for is a question, not a formality.
 $EDITOR keys/trusted-fingerprints.txt.candidate
 mv keys/trusted-fingerprints.txt{.candidate,}
+
+# Delete the .asc files for keys you did not keep. keys/ holds only the
+# allowlisted builders; `make check-pins` enforces that none are missing.
+make check-pins
 ```
 
 ## Usage
 
 ```bash
 # Per version, on a connected machine
-make fetch VERSION=31.1
-git add vendor/ && git commit -m "vendor: bitcoin core 31.1"
+make fetch VERSION=31.1          # downloads + verifies; tarball stays gitignored
+git add upstream/SHA256SUMS upstream/SHA256SUMS.asc
+git commit -m "upstream: bitcoin core 31.1 sums"
 
 # Build and prove the result
 make build smoke verify-image
@@ -166,29 +181,41 @@ docker run --rm --entrypoint /usr/local/bin/bitcoin-cli \
 ```
 Dockerfile                       two stages: verifier (throwaway) -> runtime (distroless)
 Makefile                         fetch / verify / build / smoke / verify-image / sign / attest
-scripts/fetch-release.sh         connected-machine: download a release into vendor/
+scripts/fetch-release.sh         connected-machine: stage a release into upstream/
 scripts/verify.sh                threshold signature check + digest check + provenance.json
 scripts/verify-image.sh          extract binaries from any image, compare to verified tarball
+scripts/verify-contents.sh       prove every file in the image is accounted for
+scripts/cross-check-verify-py.sh second opinion from Core's own verify.py
 scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs
-keys/                            armored builder pubkeys + trusted-fingerprints.txt
-vendor/                          committed release tarball, SHA256SUMS, SHA256SUMS.asc
+scripts/fetch-sums-from-guix-sigs.sh  recover signed sums for a withdrawn release
+scripts/check-pins.sh            assert duplicated values agree across files
+keys/                            pubkeys for the allowlisted builders only + the allowlist
+upstream/                        committed: SHA256SUMS + .asc. Gitignored: the tarball.
 ```
+
+## When upstream withdraws a release
+
+bitcoincore.org does remove old releases — 30.0 and 30.1 are already gone. The
+signed sums survive in `guix.sigs`, so `make fetch` falls back to reconstructing
+them from there automatically, and you still learn the correct hash. The
+*binaries* have no fallback: GitHub releases carry no assets, so the bytes must
+come from your own published image or archive, checked against the recovered
+sums.
 
 ## Known gaps
 
 - The verification gates have not yet been exercised end to end, and there are
   no negative tests proving they fail closed. Until those exist, treat the
   guarantees above as intent rather than as demonstrated.
-- `verify-image.sh` proves the *shipped binaries* are the right bytes. It does
-  not yet prove that nothing else was added to the image. A contents-completeness
-  manifest — every file in the rootfs accounted for against the pinned base
-  digest and the verified tarball, signed as an attestation — is planned and is
-  the main thing that would make this repo's attestation genuinely stronger than
-  what is available elsewhere.
-- `RUNTIME_BASE` is still pinned by tag rather than by digest, which does not
-  yet satisfy invariant 4.
+- `verify-contents.sh` (contents-completeness) is written and its fail-closed
+  behaviour is tested, but it has **never run against a real bitcoind image** —
+  the branch that checks binaries and libs against the release tarball is
+  unexercised against a real bitcoind image. The base-subtraction half is
+  proven.
 - `make smoke` does not currently assert on the regtest boot.
 - arm64 is untested.
+- There is no CI. No `.github/` directory, no workflow; every target is run
+  manually.
 
 ## License
 

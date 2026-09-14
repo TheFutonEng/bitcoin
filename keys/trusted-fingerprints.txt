@@ -1,7 +1,37 @@
 # Bitcoin Core release signing keys this build will accept.
 #
-# EMPTY ON PURPOSE. Run scripts/import-builder-keys.sh, review the candidate
-# list it produces against sources you trust independently, and commit only
-# the fingerprints you can corroborate.
+# These are GUIX BUILDERS, not maintainers. Each signature means "I ran the
+# reproducible build and got these bytes" — which is what makes a threshold
+# meaningful. MIN_GOOD_SIGS is 6; see invariant 3 in CLAUDE.md.
 #
-# One fingerprint per line, uppercase hex, no spaces. Comments with #.
+# Selection criteria, applied 2026-09-13:
+#   1. The key produced a valid signature over the 31.1 SHA256SUMS. A key that
+#      did not sign the release you are building cannot count toward the
+#      threshold for it.
+#   2. Long tenure in guix.sigs. "RELS" below is the number of release
+#      directories that key has attested — continuity across ~100 releases is
+#      corroboration the key itself provides.
+#
+# Deliberately EXCLUDED although it signed 31.1:
+#   5B286407E1EA6FE01CF9AF48BF131C2D0536F8AC  marcofleon — only 5 releases.
+#   Legitimate, just the least independently established of the eleven. Add it
+#   if you want more margin; that is a reviewed commit with a reason.
+#
+# NOT YET independently corroborated. The UID inside each key is self-asserted
+# and the guix.sigs history is a second source, not a third. Before relying on
+# this in anger, check each fingerprint against the person's own published key
+# (site, GitHub profile, release announcement). Delete what you cannot vouch for.
+#
+# Bootstrapped from guix.sigs @ 3b667ee3ebb3dcd9e1990cf03e38a0935eec1683
+# Read with: gpg --show-keys keys/<FINGERPRINT>.asc
+
+152812300785C96444D3334D17565732E08E5E41  # achow101      Ava Chow            RELS 99
+F4FC70F07310028424EFC20A8E4256593F177720  # guggero       Oliver Gugger       RELS 99
+D1DBF2C4B96F2DEBF4C16654410108112E7EA81F  # hebasto       Hennadii Stepanov   RELS 99
+9EDAFF80E080659604F4A76B2EBB056FD847F8A7  # Emzy          Stephan Oeste       RELS 98
+E777299FC265DD04793070EB944D35F9AC3DB76A  # fanquake      Michael Ford        RELS 98
+ED9BDF7AD6A55E232E84524257FF9BDBCC301009  # Sjors         Sjors Provoost      RELS 84
+0AD83877C1F0CD1EE9BD660AD7CC770B81FD22A8  # benthecarman  Ben Carman          RELS 62
+A8FC55F3B04BA3146F3492E79303B33A305224CB  # TheCharlatan / sedited — same person, seb.kung@gmail.com. RELS 53
+67AA5B46E7AF78053167FE343B8F814A784218F8  # willcl-ark    Will Clark          RELS 52
+E61773CD6E01040E2F1BD78CE7E2984B6289C93A  # pinheadmz     Matthew Zipkin      RELS 50
