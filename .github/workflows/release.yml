@@ -1,0 +1,136 @@
+name: release
+
+# Publishes a signed, attested image to GHCR on a version tag.
+#
+# The identity that `make verify-sig` expects for keyless verification is this
+# workflow, on a tag — see RELEASE_IDENTITY in the Makefile. Renaming this file
+# or changing the tag pattern breaks verification for everything already
+# published, so do both together if ever needed.
+#
+# This is the only workflow with write access or secrets. ci.yml is triggered by
+# pull requests, including from forks, and deliberately has neither.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version to build and publish, e.g. 31.1'
+        required: true
+
+permissions:
+  contents: read
+  packages: write   # push to GHCR
+  id-token: write   # REQUIRED for keyless signing — without it cosign has no
+                    # OIDC token and the keyless step fails at the end, after
+                    # the image is already public.
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false   # never interrupt a publish midway
+
+jobs:
+  publish:
+    name: build, publish, sign
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # A key pair is optional. Keyless alone is a complete signing story; the
+      # key exists for offline verification where Sigstore is unreachable. If the
+      # secret is absent the key steps are skipped rather than failing the run.
+      HAS_KEY: ${{ secrets.COSIGN_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve version
+        id: v
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.tag }}" ]; then
+            ver='${{ inputs.tag }}'
+          else
+            ver='${{ github.ref_name }}'; ver="${ver#v}"
+          fi
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+          echo "publishing ${ver}"
+
+      - name: Install cosign and syft
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"; echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          curl -sL -o "$HOME/.local/bin/cosign" \
+            https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64
+          chmod +x "$HOME/.local/bin/cosign"
+          curl -sL https://github.com/anchore/syft/releases/download/v1.51.1/syft_1.51.1_linux_amd64.tar.gz \
+            | tar -xz -C "$HOME/.local/bin" syft
+          chmod +x "$HOME/.local/bin/syft"
+
+      # Never publish something unverified. The whole chain runs first; any
+      # failure here means nothing reaches the registry.
+      - name: Fetch the release tarball
+        run: make fetch-tarball VERSION=${{ steps.v.outputs.version }}
+      - name: Verify signatures and digest
+        run: make verify VERSION=${{ steps.v.outputs.version }}
+      - name: Cross-check against Core's verify.py
+        run: make cross-check VERSION=${{ steps.v.outputs.version }}
+      - name: Build
+        run: make build VERSION=${{ steps.v.outputs.version }}
+      - name: Smoke test
+        run: make smoke VERSION=${{ steps.v.outputs.version }}
+      - name: Verify image binaries
+        run: make verify-image VERSION=${{ steps.v.outputs.version }}
+      - name: Verify image contents
+        run: make verify-contents VERSION=${{ steps.v.outputs.version }}
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" \
+          | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push
+        run: make push VERSION=${{ steps.v.outputs.version }}
+
+      # The SBOM is generated from the PUSHED image, so it describes exactly what
+      # consumers will pull.
+      - name: Generate SBOM
+        run: make sbom VERSION=${{ steps.v.outputs.version }}
+
+      - name: Sign — keyless
+        env:
+          COSIGN_KEYLESS: '1'
+        run: make sign VERSION=${{ steps.v.outputs.version }}
+
+      - name: Sign — key pair
+        if: env.HAS_KEY == 'true'
+        env:
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${{ secrets.COSIGN_PRIVATE_KEY }}" > /tmp/cosign.key
+          trap 'shred -u /tmp/cosign.key 2>/dev/null || rm -f /tmp/cosign.key' EXIT
+          make sign VERSION=${{ steps.v.outputs.version }} COSIGN_KEY=/tmp/cosign.key
+
+      - name: Verify the signing chain round-trips
+        env:
+          COSIGN_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+        run: make verify-sig VERSION=${{ steps.v.outputs.version }}
+
+      - name: Publish the digest
+        run: |
+          echo "### Published" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "ghcr.io/thefutoneng/bitcoind@$(make digest VERSION=${{ steps.v.outputs.version }})" \
+            >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload attestation inputs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ steps.v.outputs.version }}-predicates
+          path: |
+            provenance.json
+            sbom.spdx.json
+            contents-manifest.json
+          if-no-files-found: warn
+          retention-days: 90

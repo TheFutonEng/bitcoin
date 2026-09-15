@@ -168,7 +168,10 @@ scripts/verify-image.sh          extract binaries from any image, compare to ver
 scripts/verify-contents.sh       prove EVERY file in the image is accounted for
 scripts/check-pins.sh            assert duplicated values agree across files
 scripts/build-keyring.sh         regenerate keys/trusted-keyring.gpg from keys/*.asc
+scripts/sign-image.sh            sign + attach all three attestations (key and/or keyless)
+scripts/verify-signatures.sh     prove the signature AND all three attestations round-trip
 .github/workflows/ci.yml         the whole chain on every PR; no secrets, actions SHA-pinned
+.github/workflows/release.yml    tag-triggered publish to GHCR; the ONLY workflow with secrets
 scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs
 scripts/fetch-sums-from-guix-sigs.sh  recover signed sums when upstream withdraws a release (read its header)
 scripts/cross-check-verify-py.sh second opinion on the threshold from Core's own verify.py
@@ -296,31 +299,48 @@ about publishing and proving. `verify-contents.sh` is the thing that makes this
 repo's guarantees stronger than what is available elsewhere, and it now runs for
 real — what is left is getting the result published and signed.
 
-- [ ] **`verify-sig` does not verify what `attest` attaches.** `attest` attaches
-      three predicates — provenance, SBOM, and the contents manifest — but
-      `verify-sig` checks only the provenance one. So the round-trip claim is
-      incomplete, and the **contents manifest, the thing that makes this repo's
-      guarantee distinctive, has no verification path at all**. Partly
-      self-inflicted: the third `attest` call was added in PR #2 without
-      extending `verify-sig`. Fix it when the signing work lands, and prove it by
-      round-tripping all three.
+- [x] **`verify-sig` now verifies all three predicates.** Done 2026-09-15. It
+      checked only provenance while `attest` attached three, so the contents
+      manifest — the distinctive guarantee — had no verification path.
+      `scripts/verify-signatures.sh` checks the signature plus provenance, SBOM
+      and contents, in whichever signing modes are configured.
 
-      None of `sign` / `attest` / `verify-sig` have ever run. They need a
-      registry, a pushed image and a key. **Exercise them locally first** —
-      `docker run -d -p 5000:5000 registry:2`, `cosign generate-key-pair`, then
-      `make build push sign attest verify-sig REGISTRY=localhost:5000/bitcoin` —
-      before pointing anything at a real registry. `make sbom` is testable today
-      on its own; syft scans a local image and needs no registry. Note
-      `RepoDigests` *is* populated for a `--load`ed buildx image, so these
-      targets fail on the unreachable `registry.example.com`, not on a missing
-      digest.
+      **Both signing modes, deliberately.** Keyless binds the signature to the
+      release workflow on a tag, which is a stronger provenance claim than a key
+      file and is logged to Rekor. The key pair is verifiable offline with no
+      dependency on Sigstore, which is what survives an air gap. Key-pair
+      signatures intentionally skip Rekor, so verifying them passes
+      `--insecure-ignore-tlog`; that warning is about the absence of a
+      transparency log, not about the signature.
 
-- [ ] **Publish the image as a release on this repo, and make that the archive.**
-      This is the answer to release withdrawal (30.0 and 30.1 are already gone
-      from bitcoincore.org) and the reason the tarball is not in git. Decide
-      GHCR vs GitHub Releases attachments, set `REGISTRY` in the Makefile — it
-      is still the placeholder `registry.example.com/bitcoin` — and retain old
-      tags deliberately rather than by default.
+      **Proven end to end 2026-09-15** against a throwaway `registry:2` and a
+      throwaway key: push, sbom, sign, attest x3, verify all four — green. Fails
+      closed both ways: verifying with the wrong public key exits non-zero, and
+      pushing a tampered image to the same tag also fails, because the signature
+      is bound to the digest rather than the tag.
+
+      **Keyless cannot be exercised locally** — it needs an OIDC token that only
+      CI has, and signing keylessly from a laptop would write test entries to the
+      public transparency log. The first real tag is its first test.
+
+      cosign v3 notes, both found by running it: `--tlog-upload=false` errors
+      unless `--use-signing-config=false` is also passed, and predicate types are
+      given with `--type`. Verified against v3.1.3.
+- [ ] **First real publish.** The machinery exists — `.github/workflows/release.yml`
+      builds, verifies the whole chain, pushes to GHCR, signs keyless (and with a
+      key if `COSIGN_PRIVATE_KEY` is set), then proves the round trip. It has
+      never run. Before tagging:
+
+      1. GHCR needs the package to exist and be linked to the repo. The first
+         push from `GITHUB_TOKEN` creates it as **private**; make it public and
+         link it to the repo in package settings, or consumers cannot pull.
+      2. Optional: add `COSIGN_PRIVATE_KEY` and `COSIGN_PASSWORD` secrets to
+         enable the offline-verifiable mode. Without them the run skips those
+         steps rather than failing, and publishes keyless-signed only.
+      3. Tag `v31.1` and watch it. `id-token: write` is what makes keyless work;
+         without it the run fails *after* the image is public.
+
+      Then document the pull-and-verify command for consumers in the README.
 - [ ] **Add a rebuild-from-published-image path.** Publishing preserves the old
       image but not the ability to put that Bitcoin version on a *new* base,
       which is exactly what a distroless CVE demands. Source the binaries from a
