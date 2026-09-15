@@ -20,7 +20,7 @@ BUILD_DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>
 
 export SOURCE_DATE_EPOCH
 
-.PHONY: help check-pins keyring fetch verify cross-check build smoke verify-image verify-contents verify-upstream digest sbom sign attest verify-sig clean
+.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build smoke verify-image verify-contents verify-upstream digest sbom sign attest verify-sig clean
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s$$'\t'
@@ -33,6 +33,17 @@ check-pins: ## Assert duplicated values agree across Dockerfile/Makefile/verify.
 
 keyring: ## Regenerate keys/trusted-keyring.gpg from keys/*.asc (the build verifies against it)
 	scripts/build-keyring.sh
+
+# Download ONLY the tarball, leaving the committed SHA256SUMS and .asc alone.
+# This is the rebuilder's path and what CI uses: it proves the sums already in
+# git admit the bytes upstream is serving. `make fetch` re-downloads the sums
+# too, which is right when vendoring a new version but wrong as a check, since
+# it would verify freshly-fetched sums against themselves.
+fetch-tarball: ## Download just the release tarball (sums must already be committed)
+	@test -f upstream/SHA256SUMS || { echo "upstream/SHA256SUMS missing — run make fetch" >&2; exit 1; }
+	curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+	  --output upstream/bitcoin-$(VERSION)-$(TRIPLE).tar.gz \
+	  https://bitcoincore.org/bin/bitcoin-core-$(VERSION)/bitcoin-$(VERSION)-$(TRIPLE).tar.gz
 
 verify: check-pins ## Re-verify what is already in upstream/
 	MIN_GOOD_SIGS=$(MIN_GOOD_SIGS) scripts/verify.sh $(VERSION) $(TRIPLE)

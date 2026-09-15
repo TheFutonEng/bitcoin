@@ -65,7 +65,7 @@ What it does **not** give you, and what you are paying:
   that check plus their image would be the right answer.
   (This target had `BIN_PATH` wrong until 2026-09-12 — it assumed
   `/usr/local/bin`, but their binaries live in `/opt/bitcoin-<version>/bin`, so
-  it had never actually run. It has still not been run against a real image.)
+  it had never actually run. Fixed and run 2026-09-14; both binaries MATCH.)
 
 Framed honestly: this is a **hardening and ownership** exercise. The provenance
 was already fine.
@@ -155,7 +155,7 @@ already performs.
 6. **Verification logic lives in two places** (`Dockerfile` and
    `scripts/verify.sh`) deliberately, so a standalone check and the image build
    agree. Change one, change the other. Task below to add a test that they
-   match. Note the standalone runner is a human today — there is no CI yet.
+   match. Both are run by CI on every pull request.
 
 ## Layout
 
@@ -168,6 +168,7 @@ scripts/verify-image.sh          extract binaries from any image, compare to ver
 scripts/verify-contents.sh       prove EVERY file in the image is accounted for
 scripts/check-pins.sh            assert duplicated values agree across files
 scripts/build-keyring.sh         regenerate keys/trusted-keyring.gpg from keys/*.asc
+.github/workflows/ci.yml         the whole chain on every PR; no secrets, actions SHA-pinned
 scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs
 scripts/fetch-sums-from-guix-sigs.sh  recover signed sums when upstream withdraws a release (read its header)
 scripts/cross-check-verify-py.sh second opinion on the threshold from Core's own verify.py
@@ -285,7 +286,7 @@ doing something clever, this catches it.
 make build           image built, --network=none, 10 accepted signers in-build
 make smoke           bitcoind v31.1.0 + bitcoin-cli run; regtest boot: OK
 make verify-image    MATCH bitcoind, MATCH bitcoin-cli
-make verify-contents 1665 base + 2 verified + 2 generated = 1669, 0 UNACCOUNTED
+make verify-contents 1660 base + 2 verified + 2 generated = 1664, 0 UNACCOUNTED
 ```
 
 ### Do these next
@@ -350,20 +351,40 @@ real — what is left is getting the result published and signed.
       attached by `make attest` under its own predicate type so a consumer can
       re-derive "these N files, these hashes, nothing else" offline.
 
-      **Tested 2026-09-12, fails closed** — three fixtures built on the
-      distroless base: unmodified (1665 entries, all accounted, exit 0), one
-      extra file (UNACCOUNTED, exit 1), one modified `/etc/passwd` (MODIFIED,
-      exit 1). Measured base composition: 1788 tar entries = 1288 regular files
-      + 377 symlinks + 123 directories; the script covers the 1665
-      content-bearing entries and ignores directories.
+      **Tested, fails closed** — three fixtures built on the distroless base:
+      unmodified (all accounted, exit 0), one extra file (UNACCOUNTED, exit 1),
+      one modified `/etc/passwd` (MODIFIED, exit 1). Re-confirmed 2026-09-14
+      against the real image by planting a file: UNACCOUNTED, exit 1.
 
-      **Proven end to end 2026-09-14** against the real image: 1665 base files
-      + 2 verified binaries + 2 generated breadcrumbs = 1669 entries, zero
+      Measured base composition: 1788 tar entries = 1288 regular files + 377
+      symlinks + 123 directories. Directories carry no content and are ignored,
+      leaving 1665 content-bearing entries, of which 5 are Docker runtime
+      injections excluded by `DOCKER_RUNTIME_PATHS` — so the script covers
+      **1660** base entries.
+
+      **Proven end to end 2026-09-14** against the real image: 1660 base files
+      + 2 verified binaries + 2 generated breadcrumbs = 1664 entries, zero
       unaccounted. The tarball branch now executes for real.
 
-      **Known hole:** `GENERATED_PATHS` trusts the two provenance breadcrumbs by
-      path, not by hash, because their content is build-specific. Keep that list
-      short — every entry is a hole in the guarantee.
+      **Two known holes, both by path rather than hash.** Keep both lists short;
+      every entry is a hole in the guarantee.
+
+      `GENERATED_PATHS` trusts the two provenance breadcrumbs by path, because
+      their content is build-specific.
+
+      `DOCKER_RUNTIME_PATHS` excludes five paths Docker injects into a
+      container's rootfs at create time — `.dockerenv`, `dev/console`,
+      `etc/hostname`, `etc/hosts`, `etc/resolv.conf`. **They are not in the
+      image**: verified 2026-09-14 by inspecting the image layers directly, where
+      none of the five appear. `docker export` is the only practical way to
+      flatten a rootfs but it exports a *container*, so they came along and were
+      being counted as base files. They cancelled out, so the arithmetic was
+      never wrong — but the manifest claimed to describe the image while actually
+      describing a container export, which a consumer re-deriving hashes from
+      layers could not reproduce. A file planted at one of those five paths is
+      now skipped; that is acceptable because Docker overrides all five at
+      runtime, verified by building an image with `1.2.3.4 evil.example.com` at
+      `/etc/hosts` and confirming the container sees Docker's file instead.
 
       Remaining sub-task: bump buildx from `--provenance=true` (mode=min) to
       `mode=max`, which records build args and materials for free.
@@ -401,13 +422,11 @@ real — what is left is getting the result published and signed.
       `SHIP_BINARIES="bitcoind bitcoin-cli"` is correct and self-contained, and
       nothing from `libexec/` is needed.
 
-      **Consequence: the `lib/` handling in the Dockerfile is dead code.** The
-      `if [ -d /unpack/lib ]` branch never fires, `/out/lib/` ships only
-      `.keep`, and `LD_LIBRARY_PATH=/usr/local/lib` points at an effectively
-      empty directory. Harmless, but it implies a dependency that does not
-      exist. Remove it when fixing the apt/`--network=none` breakage above —
-      same file, same edit session. Re-check on every minor version bump: this
-      is a property of 31.1, not a guarantee.
+      **Consequence: the `lib/` handling in the Dockerfile was dead code** — the
+      `if [ -d /unpack/lib ]` branch never fired and `LD_LIBRARY_PATH` pointed at
+      an empty directory. Removed 2026-09-14 alongside the apt fix. Re-check on
+      every minor version bump: this is a property of 31.1, not a guarantee, and
+      `make smoke` is what catches it if a future release adds a shared library.
 - [x] **Pin the runtime base by digest.** Done 2026-09-12.
       `gcr.io/distroless/cc-debian12@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f`
       in both the Dockerfile `ARG` and the Makefile. That digest is an OCI image
@@ -454,8 +473,33 @@ real — what is left is getting the result published and signed.
       key, threshold of 5 when 6 is required, a binary swapped inside a test
       image so `verify-image.sh` is proven to catch it. A verification gate with
       no test proving it fails closed is decoration.
-- [ ] **CI.** `make verify` on every PR, `make build smoke verify-image` on
-      tags. Keep the signing key out of PR-triggered runs.
+- [x] **CI.** `.github/workflows/ci.yml`, added 2026-09-14. Two jobs:
+      `checks` runs `make check-pins` for fast drift feedback, and
+      `verify-and-build` runs the whole chain — `verify`, `cross-check`,
+      `build`, `smoke`, `verify-image`, `verify-contents` — on every pull
+      request and push to main, ~14s of work plus the tarball download.
+
+      Broader than the original plan, which was `verify` on PRs and the build
+      only on tags. The full chain takes seconds, and **every bug found while
+      writing this repo was a "never ran" bug**: the build had never succeeded,
+      smoke could not fail, `verify-upstream` had the wrong path, the
+      `base.name` label was empty. None were subtle once executed. Running
+      everything on every PR is the whole point.
+
+      Notes on the design:
+      - CI downloads **only the tarball** (`make fetch-tarball`), leaving the
+        committed `SHA256SUMS` and `.asc` alone. `make fetch` would re-download
+        the sums and verify them against themselves. Cached on the expected
+        tarball hash read out of the committed sums, so the cache invalidates
+        exactly when the vendored version changes.
+      - **No secrets in any job.** Signing needs a key and belongs in a separate
+        tag-triggered workflow, so a pull request from a fork can never reach it.
+      - Actions are **pinned by commit SHA**, not tag — the same reasoning as
+        invariant 5 for the base image.
+      - `make verify-upstream` is deliberately absent. It is valuable, but it
+        depends on a third party's Docker Hub tag continuing to exist and keep
+        its contents; that is someone else's availability and should not be able
+        to turn this repo's CI red. Run it by hand when the claim matters.
 
 ## Gotchas
 

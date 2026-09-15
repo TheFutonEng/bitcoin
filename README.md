@@ -14,7 +14,7 @@ image**. It says nothing about how you deploy or operate a node.
 > confirmed by Core's own `verify.py`. But `make build` is currently **broken**:
 > the Dockerfile's verifier stage runs `apt-get` while the build passes
 > `--network=none`, which cannot both hold. See [Known gaps](#known-gaps). There
-> is no CI yet either; every target below is run by hand.
+> CI runs the whole chain on every pull request.
 
 ## Why this exists
 
@@ -190,6 +190,7 @@ scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs
 scripts/fetch-sums-from-guix-sigs.sh  recover signed sums for a withdrawn release
 scripts/check-pins.sh            assert duplicated values agree across files
 scripts/build-keyring.sh         regenerate the keyring the container build uses
+.github/workflows/ci.yml         runs the whole chain on every pull request
 keys/                            pubkeys for the allowlisted builders, the allowlist,
                                  and the derived keyring the build verifies against
 upstream/                        committed: SHA256SUMS + .asc. Gitignored: the tarball.
@@ -216,8 +217,9 @@ sums.
   proven.
 - `make smoke` does not currently assert on the regtest boot.
 - arm64 is untested.
-- There is no CI. No `.github/` directory, no workflow; every target is run
-  manually.
+- `sign`, `attest` and `verify-sig` have never run; they need a registry and a
+  key. `verify-sig` also only checks one of the three predicates `attest`
+  attaches.
 
 ## License
 
