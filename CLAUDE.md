@@ -195,7 +195,7 @@ make fetch VERSION=31.1          # downloads, verifies, cross-checks against ver
 git add upstream/SHA256SUMS upstream/SHA256SUMS.asc
 git commit -m "upstream: bitcoin core 31.1 sums"  # the tarball is gitignored
 make build smoke verify-image verify-contents
-docker push ...
+make push                        # rebuilds with mode=max provenance + SBOM
 make sbom sign attest COSIGN_KEY=...
 make digest          # publish this; consumers pin it
 ```
@@ -386,8 +386,10 @@ real — what is left is getting the result published and signed.
       runtime, verified by building an image with `1.2.3.4 evil.example.com` at
       `/etc/hosts` and confirming the container sees Docker's file instead.
 
-      Remaining sub-task: bump buildx from `--provenance=true` (mode=min) to
-      `mode=max`, which records build args and materials for free.
+      Sub-task done 2026-09-15: `make push` carries `--provenance=mode=max`,
+      which records build args and materials rather than just the build
+      definition. It lives on `push` rather than `build` because attestations
+      cannot be attached to a `--load`ed image — see the gotcha below.
 - [ ] **Reproducible rebuild agreement.** The strongest attestation claim
       available to this repo, and one `bitcoin/bitcoin` does not make: two people
       building the same commit independently get the same image digest. The
@@ -533,6 +535,20 @@ the Dockerfile parse `--status-fd` output rather than checking the exit code. If
 anyone ever simplifies that to an exit-code check, the threshold is gone. (This
 is a note about our implementation, not a criticism of upstream tooling, which
 handles this correctly.)
+
+**Attestations are registry artifacts; `--load` cannot hold them.** buildkit
+emits provenance and SBOM as separate manifests in an OCI index beside the
+image. A `--load` into the classic docker image store has nowhere to put them
+and buildx fails outright with `Attestation is not supported for the docker
+driver`. This shipped in the first CI run and had passed locally for days,
+because this machine has the **containerd image store** enabled
+(`docker info` → `io.containerd.snapshotter.v1`) and GitHub runners do not. A
+clean "works on my machine" difference in an environment nobody thinks to check.
+
+`make build` therefore passes `--provenance=false --sbom=false` — it produces a
+local image for smoke/verify-image/verify-contents, which need no attestations.
+`make push` carries `--provenance=mode=max --sbom=true`, where they can actually
+be stored. Do not add attestation flags back to a `--load` build.
 
 **`make smoke` is not optional, and it must be able to fail.** The build can
 succeed and produce an image whose binaries cannot load, or which cannot write

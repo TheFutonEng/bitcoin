@@ -116,8 +116,8 @@ git commit -m "upstream: bitcoin core 31.1 sums"
 # Build and prove the result
 make build smoke verify-image
 
-# Publish
-docker push ...
+# Publish — attestations ride on the push, not on a local --load build
+make push
 make sbom sign attest COSIGN_KEY=...
 make digest          # publish this digest; consumers pin it
 ```
