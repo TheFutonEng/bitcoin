@@ -87,7 +87,17 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
 
-          if printf '%s\n' $files | grep -qv '\.md$'; then
+          # Count non-markdown files rather than testing `grep -qv`. The exit
+          # status of `grep -q` combined with `-v` is not portable: GNU grep
+          # returns 0 if ANY line is selected, but at least one drop-in
+          # replacement (ugrep 7.8.4, found on a dev machine here) returns 0
+          # only when EVERY line is selected. That difference silently inverts
+          # this decision and would skip the whole chain on a code change.
+          # Counting lines is unambiguous in both.
+          non_md=$(printf '%s\n' $files | grep -c -v '\.md$' || true)
+          echo "non-markdown files changed: ${non_md}"
+
+          if [ "${non_md:-1}" -gt 0 ]; then
             echo "non-markdown changes present — running the full chain"
             echo "code=true" >> "$GITHUB_OUTPUT"
           else
