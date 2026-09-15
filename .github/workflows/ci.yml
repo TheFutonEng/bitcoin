@@ -10,6 +10,22 @@ name: ci
 # separate, tag-triggered workflow so a pull request from a fork can never reach
 # it.
 
+# Markdown-only changes do no work. The jobs still RUN and still report — they
+# just skip the expensive steps — which matters if these ever become required
+# checks for merging.
+#
+# The obvious approach, `paths-ignore: ['**.md']` plus a stub workflow that
+# reports the same job names on docs-only changes, does not work. GitHub's path
+# filters are "at least one changed file matches", and `paths` and `paths-ignore`
+# cannot both be used for one event, so there is no way to say "only when EVERY
+# changed file is markdown". A PR touching docs AND code would fire both
+# workflows and report two check runs with the same name, one of which always
+# passes. A stub that always succeeds while shadowing the real gate is worse
+# than no filter at all.
+#
+# So: no path filter. A `changes` job diffs the actual file list, and the costly
+# steps are gated on it. Detection fails SAFE — anything unexpected (a forced
+# push, a new branch, an empty base SHA) runs the full chain.
 on:
   pull_request:
   push:
@@ -28,15 +44,70 @@ env:
   TRIPLE: x86_64-linux-gnu
 
 jobs:
+  # Did anything other than markdown change? Everything downstream gates on this.
+  # Fails safe: if the diff cannot be determined, `code` is true and the full
+  # chain runs.
+  changes:
+    name: detect changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: detect
+        run: |
+          set -euo pipefail
+          case "${{ github.event_name }}" in
+            pull_request)
+              base='${{ github.event.pull_request.base.sha }}'
+              head='${{ github.event.pull_request.head.sha }}' ;;
+            push)
+              base='${{ github.event.before }}'
+              head='${{ github.sha }}' ;;
+            *)
+              echo "event ${{ github.event_name }}: running everything"
+              echo "code=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+
+          # An all-zero or unresolvable base means we cannot tell what changed.
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+            echo "base commit unavailable — running everything"
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          files=$(git diff --name-only "$base" "$head")
+          echo "changed files:"; printf '  %s\n' $files
+
+          if [ -z "$files" ]; then
+            echo "no files changed — running everything to be safe"
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          if printf '%s\n' $files | grep -qv '\.md$'; then
+            echo "non-markdown changes present — running the full chain"
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "markdown only — skipping the expensive steps"
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # Fast feedback, no network beyond the clone. Catches the drift class of bug:
   # MIN_GOOD_SIGS disagreeing across three files, an unpinned base, an
   # allowlisted fingerprint with no key file, a keyring out of sync.
   checks:
     name: consistency
+    # Deliberately no `needs: changes` — it runs unconditionally and would only
+    # be waiting for an output it does not use.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Cheap enough to run unconditionally, and it guards the allowlist and the
+      # pins regardless of what changed.
       - name: make check-pins
         run: make check-pins
 
@@ -45,8 +116,15 @@ jobs:
   # upstream is actually serving.
   verify-and-build:
     name: verify + build + prove
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # NOTE: the job is not gated with `if:` — a skipped job reports a "skipped"
+    # conclusion, and how branch protection treats that is not something to bet
+    # the merge gate on. The job always runs and always reports; the steps are
+    # what get skipped.
+    env:
+      CODE: ${{ needs.changes.outputs.code }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -54,45 +132,54 @@ jobs:
       # it invalidates exactly when the vendored version changes.
       - name: Compute tarball cache key
         id: tb
+        if: env.CODE == 'true'
         run: |
           sha=$(grep "  bitcoin-${VERSION}-${TRIPLE}.tar.gz\$" upstream/SHA256SUMS | cut -d' ' -f1)
           test -n "$sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: env.CODE == 'true'
         with:
           path: upstream/bitcoin-${{ env.VERSION }}-${{ env.TRIPLE }}.tar.gz
           key: tarball-${{ steps.tb.outputs.sha }}
 
       - name: Fetch tarball if not cached
+        if: env.CODE == 'true'
         run: |
           f="upstream/bitcoin-${VERSION}-${TRIPLE}.tar.gz"
           if [ -f "$f" ]; then echo "cache hit"; else make fetch-tarball; fi
 
       # Threshold + digest against the COMMITTED sums and allowlist.
       - name: make verify
+        if: env.CODE == 'true'
         run: make verify
 
       # Independent second opinion from Core's own verify.py. Disagreement here
       # means one of the two parsers is wrong — which is how the subkey bug was
       # caught in the first place.
       - name: make cross-check
+        if: env.CODE == 'true'
         run: make cross-check
 
       # Hermetic build: --network=none, gpgv against the committed keyring.
       - name: make build
+        if: env.CODE == 'true'
         run: make build
 
       # The binaries must actually load and the node must reach "Done loading".
       - name: make smoke
+        if: env.CODE == 'true'
         run: make smoke
 
       # Shipped binaries are byte-identical to the verified tarball.
       - name: make verify-image
+        if: env.CODE == 'true'
         run: make verify-image
 
       # And nothing else is in the image.
       - name: make verify-contents
+        if: env.CODE == 'true'
         run: make verify-contents
 
       # `make verify-upstream` is deliberately NOT here. It is a valuable check
@@ -101,8 +188,12 @@ jobs:
       # contents. That is someone else's availability, and it should not be able
       # to turn this repo's CI red. Run it by hand when the claim matters.
 
+      - name: Markdown-only change — nothing to verify
+        if: env.CODE != 'true'
+        run: echo "Only .md files changed; the verification chain was skipped."
+
       - name: Upload contents manifest
-        if: always()
+        if: always() && env.CODE == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: contents-manifest
