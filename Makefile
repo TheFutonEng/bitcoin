@@ -20,7 +20,7 @@ BUILD_DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>
 
 export SOURCE_DATE_EPOCH
 
-.PHONY: help check-pins keyring fetch verify cross-check build smoke verify-image verify-contents verify-upstream digest sbom sign attest verify-sig clean
+.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke verify-image verify-contents verify-upstream digest sbom sign attest verify-sig clean
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s$$'\t'
@@ -33,6 +33,17 @@ check-pins: ## Assert duplicated values agree across Dockerfile/Makefile/verify.
 
 keyring: ## Regenerate keys/trusted-keyring.gpg from keys/*.asc (the build verifies against it)
 	scripts/build-keyring.sh
+
+# Download ONLY the tarball, leaving the committed SHA256SUMS and .asc alone.
+# This is the rebuilder's path and what CI uses: it proves the sums already in
+# git admit the bytes upstream is serving. `make fetch` re-downloads the sums
+# too, which is right when vendoring a new version but wrong as a check, since
+# it would verify freshly-fetched sums against themselves.
+fetch-tarball: ## Download just the release tarball (sums must already be committed)
+	@test -f upstream/SHA256SUMS || { echo "upstream/SHA256SUMS missing — run make fetch" >&2; exit 1; }
+	curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+	  --output upstream/bitcoin-$(VERSION)-$(TRIPLE).tar.gz \
+	  https://bitcoincore.org/bin/bitcoin-core-$(VERSION)/bitcoin-$(VERSION)-$(TRIPLE).tar.gz
 
 verify: check-pins ## Re-verify what is already in upstream/
 	MIN_GOOD_SIGS=$(MIN_GOOD_SIGS) scripts/verify.sh $(VERSION) $(TRIPLE)
@@ -51,9 +62,40 @@ build: verify ## Build the image (hermetic — no network in the build)
 	  --build-arg SOURCE_REPO=$(SOURCE_REPO) \
 	  --build-arg VCS_REF=$(VCS_REF) \
 	  --build-arg BUILD_DATE=$(BUILD_DATE) \
-	  --provenance=true --sbom=true \
+	  --provenance=false --sbom=false \
 	  -t $(IMAGE):$(TAG) \
 	  --load .
+
+# Attestations are REGISTRY artifacts: buildkit emits them as separate manifests
+# in an OCI index beside the image. A `--load` into the classic docker image
+# store has nowhere to put them, and buildx fails outright:
+#
+#   ERROR: Attestation is not supported for the docker driver.
+#
+# This passed locally and failed in CI because this machine has the containerd
+# image store enabled, which does support them. `make build` produces a local
+# image for smoke/verify-image/verify-contents and needs no attestations, so it
+# asks for none. They belong on the push, where they can actually be stored.
+#
+# mode=max records build args and materials, not just the build definition.
+# Not a dependency of `build`, and `build` is not a dependency of this: it would
+# silently build twice. Run the verification chain first —
+#   make build smoke verify-image verify-contents push
+push: ## Build and push with full provenance + SBOM attestations
+	@echo "pushing $(IMAGE):$(TAG)"
+	docker buildx build \
+	  --platform $(PLATFORM) \
+	  --network=none \
+	  --build-arg BITCOIN_VERSION=$(VERSION) \
+	  --build-arg TARGET_TRIPLE=$(TRIPLE) \
+	  --build-arg RUNTIME_BASE=$(RUNTIME_BASE) \
+	  --build-arg MIN_GOOD_SIGS=$(MIN_GOOD_SIGS) \
+	  --build-arg SOURCE_REPO=$(SOURCE_REPO) \
+	  --build-arg VCS_REF=$(VCS_REF) \
+	  --build-arg BUILD_DATE=$(BUILD_DATE) \
+	  --provenance=mode=max --sbom=true \
+	  -t $(IMAGE):$(TAG) \
+	  --push .
 
 smoke: ## Prove the runtime base can actually run the binaries
 	@echo "--- bitcoind -version ---"

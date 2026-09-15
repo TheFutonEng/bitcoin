@@ -53,6 +53,32 @@ usr/local/share/bitcoind-provenance/accepted-signers.txt
 usr/local/share/bitcoind-provenance/upstream-digest.txt
 "
 
+# Paths Docker injects into a container's rootfs at create time. They are NOT in
+# the image — verified 2026-09-14 by inspecting the image layers directly, where
+# none of the five appear. `docker export` is the only practical way to flatten a
+# rootfs, but it exports a CONTAINER, so these come along for the ride.
+#
+# They would cancel out anyway, since both inventories are produced the same way.
+# Excluding them is about the manifest being honest: it claims to describe the
+# image, and a consumer re-deriving these hashes from the image layers would not
+# see them. Worse, exporting a RUNNING container yields populated etc/hosts and
+# etc/resolv.conf, whose hashes differ — which would read as MODIFIED against a
+# manifest that included them.
+#
+# THE HOLE THIS OPENS, and why it is acceptable: a file planted at one of these
+# five paths is skipped. Docker overrides all five at runtime, so planted content
+# is inert — verified 2026-09-14 by building an image with
+# `1.2.3.4 evil.example.com` at /etc/hosts and confirming the running container
+# sees Docker's generated file instead, with no trace of it. Keep this list at
+# exactly the paths Docker masks; anything else here is a real blind spot.
+DOCKER_RUNTIME_PATHS="
+.dockerenv
+dev/console
+etc/hostname
+etc/hosts
+etc/resolv.conf
+"
+
 BASE="${BASE:-$(docker inspect --format \
   '{{index .Config.Labels "org.opencontainers.image.base.name"}}' \
   "${IMAGE}" 2>/dev/null || true)}"
@@ -93,7 +119,10 @@ inventory() {
     find . -type l -printf '%P\0' 2>/dev/null | sort -z | while IFS= read -r -d '' f; do
       printf 'symlink:%s  %s\n' "$(readlink -- "$f")" "$f"
     done
-  ) | sort -k2 > "${out}"
+  ) | awk -v drop="$(printf '%s' "${DOCKER_RUNTIME_PATHS}")" '
+      BEGIN { n=split(drop, a, "\n"); for (i=1; i<=n; i++) if (a[i] != "") skip[a[i]]=1 }
+      { i=index($0,"  "); if (!(substr($0,i+2) in skip)) print }
+    ' | sort -k2 > "${out}"
   rm -rf "${dir}"
 }
 

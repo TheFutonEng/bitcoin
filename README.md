@@ -8,61 +8,51 @@ manifest of everything inside it.
 Scope is deliberately narrow: this repo **builds, verifies, and publishes an
 image**. It says nothing about how you deploy or operate a node.
 
-> **Status: verification works; the image build does not.** The allowlist is
-> populated with 10 Bitcoin Core builders and `make verify` passes against real
-> 31.1 artifacts — 10 accepted signatures against a threshold of 6, independently
-> confirmed by Core's own `verify.py`. But `make build` is currently **broken**:
-> the Dockerfile's verifier stage runs `apt-get` while the build passes
-> `--network=none`, which cannot both hold. See [Known gaps](#known-gaps). There
-> is no CI yet either; every target below is run by hand.
+> **Status: the build and verification chain work end to end.** The allowlist
+> holds 10 Bitcoin Core builders; `make verify` accepts 10 signatures against a
+> threshold of 6 on the real 31.1 release, independently confirmed by Core's own
+> `verify.py`. `make build` runs with no network, `make smoke` boots a regtest
+> node, and `make verify-contents` accounts for every file in the image. CI runs
+> the whole chain on every pull request. Publishing and signing are not done yet
+> — see [Known gaps](#known-gaps).
 
 ## Why this exists
 
-Be precise about the justification, because the obvious one is wrong.
-
 The widely used [`bitcoin/bitcoin`](https://hub.docker.com/r/bitcoin/bitcoin)
-images on Docker Hub are built by
-[`willcl-ark/bitcoin-core-docker`](https://github.com/willcl-ark/bitcoin-core-docker),
-maintained personally by a member of the Bitcoin Core GitHub organization. They
-are **explicitly unofficial** — the Docker Hub page states they are "not
-endorsed or associated with the Bitcoin Core project on Github". Their CI
-verifies upstream signatures using Core's own `verify.py` against builder keys
-cloned from `guix.sigs`. Their Dockerfiles and workflows are public.
+images on Docker Hub are, by their own description, unofficial — the Docker Hub
+page states they are "not endorsed or associated with the Bitcoin Core project
+on Github". They are carefully built and their pipeline is public and auditable.
+This repo exists because a node image in this environment has to be one we own,
+build, and can attest to ourselves — not because there is anything wrong with
+theirs.
 
-**This repo is not more cryptographically rigorous than theirs, and for the
-Debian-based tags the binaries in both images are the same upstream bytes.**
-Anyone who tells you otherwise is overselling it. They pass
-`--min-good-sigs 6`; this repo's `MIN_GOOD_SIGS` defaults to the same 6, so the
-signature thresholds are equivalent.
+Be precise about what that ownership buys, though, because the obvious answer is
+wrong. **It is not better provenance.** Upstream publishes Guix-reproducible
+release binaries signed by a threshold of independent builders, and any image
+built from those binaries contains the same bytes. That is measured here, not
+assumed: `make verify-upstream` extracts the binaries from `bitcoin/bitcoin` and
+reports the same hashes `make verify-image` reports for ours.
 
-Two caveats on that comparison. Their `alpine` and `master` tags are built from
-source in CI rather than from release binaries, so the identical-bytes claim
-covers only the Debian-based tags. And their own documentation warns that users
-running Bitcoin Core for non-testing purposes should verify binaries themselves,
-since "it is non-trivial to verify the authenticity of the bitcoin core binaries
-inside" a prebuilt image.
+What ownership does give you:
 
-What it actually gives you:
-
-1. **Base image control.** Theirs is `debian:bookworm-slim`, with a shell and a
-   package manager in it, and their Dockerfile has no `USER` directive — the
-   container starts as root and drops to the `bitcoin` user via
-   `exec gosu bitcoin "$@"` in an entrypoint script. This one is distroless,
-   with `USER 65532:65532` set at build time and no entrypoint script at all.
-   Verified against the base image on 2026-09-12: no shell, no package manager,
-   and `/etc/passwd` carries exactly
-   `nonroot:x:65532:65532:nonroot:/home/nonroot:/sbin/nologin`.
+1. **Base image control.** This image is distroless — no shell, no package
+   manager, a far smaller CVE surface, and scanner evidence you own. It runs as
+   `USER 65532:65532`, set at build time, with no entrypoint script.
 2. **Artifact ownership.** You publish and retain the image yourself. Upstream
    does withdraw releases — 30.0 and 30.1 are already gone from bitcoincore.org
-   — so the image you published, not a third party's registry, is the archive.
+   — so the image you published is the archive.
 3. **Lifecycle ownership.** Version cadence, signing under your own key, SBOM,
-   and no dependency on a third-party Docker Hub account continuing to exist.
-   You would have to re-sign and re-scan someone else's image anyway.
+   and no dependency on a third party's release timing or registry. You would
+   have to re-sign and re-scan any image you did not build anyway.
+4. **A signed inventory of the contents.** `make verify-contents` accounts for
+   every file in the image against the digest-pinned base and the verified
+   release tarball, and publishes the result as a manifest. That is the one
+   guarantee here that is genuinely hard to get any other way.
 
 What it costs you: you now own Core release tracking, base-image CVE response,
-and multi-arch. You also take on trust in `debian:bookworm-slim` (the throwaway
-verifier stage) and the distroless base. The total supply-chain surface is not
-obviously smaller than simply consuming the upstream-maintained image.
+and multi-arch. You also take on trust in `debian:bookworm-slim` for the
+throwaway verifier stage, and in the distroless base. The total supply-chain
+surface is not obviously smaller than consuming a prebuilt image.
 
 Framed honestly, this is a **hardening and ownership** exercise. The provenance
 was already fine.
@@ -116,8 +106,8 @@ git commit -m "upstream: bitcoin core 31.1 sums"
 # Build and prove the result
 make build smoke verify-image
 
-# Publish
-docker push ...
+# Publish — attestations ride on the push, not on a local --load build
+make push
 make sbom sign attest COSIGN_KEY=...
 make digest          # publish this digest; consumers pin it
 ```
@@ -190,6 +180,7 @@ scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs
 scripts/fetch-sums-from-guix-sigs.sh  recover signed sums for a withdrawn release
 scripts/check-pins.sh            assert duplicated values agree across files
 scripts/build-keyring.sh         regenerate the keyring the container build uses
+.github/workflows/ci.yml         runs the whole chain on every pull request
 keys/                            pubkeys for the allowlisted builders, the allowlist,
                                  and the derived keyring the build verifies against
 upstream/                        committed: SHA256SUMS + .asc. Gitignored: the tarball.
@@ -206,18 +197,20 @@ sums.
 
 ## Known gaps
 
-- The verification gates have not yet been exercised end to end, and there are
-  no negative tests proving they fail closed. Until those exist, treat the
-  guarantees above as intent rather than as demonstrated.
-- `verify-contents.sh` (contents-completeness) is written and its fail-closed
-  behaviour is tested, but it has **never run against a real bitcoind image** —
-  the branch that checks binaries and libs against the release tarball is
-  unexercised against a real bitcoind image. The base-subtraction half is
-  proven.
-- `make smoke` does not currently assert on the regtest boot.
-- arm64 is untested.
-- There is no CI. No `.github/` directory, no workflow; every target is run
-  manually.
+- **Publishing and signing are unproven.** `sign`, `attest` and `verify-sig`
+  have never run — they need a registry, a pushed image and a key. `verify-sig`
+  also verifies only one of the three predicates `attest` attaches, so the
+  contents manifest currently has no verification path.
+- **`REGISTRY` is still the placeholder** `registry.example.com/bitcoin`.
+- **No formal negative-test suite.** Individual gates have been proven to fail
+  closed — a planted file, a tampered keyring, injected pin drift, an unwritable
+  datadir — but those proofs are ad hoc rather than a runnable suite.
+- **arm64 is untested.** The pinned base is already a multi-arch index, so the
+  base is not the blocker.
+- **`DOCKER_RUNTIME_PATHS` is a deliberate hole.** Five paths Docker injects
+  into a container are excluded from the contents manifest. Content planted
+  there is inert because Docker overrides all five at runtime, but they are not
+  checked.
 
 ## License
 
