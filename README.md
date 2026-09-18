@@ -154,7 +154,7 @@ directory on the host:
 mkdir -p /srv/bitcoin-data && chown 65532:65532 /srv/bitcoin-data
 
 docker run --rm -v /srv/bitcoin-data:/data \
-  registry.example.com/bitcoin/bitcoind:31.1 \
+  ghcr.io/thefutoneng/bitcoin:31.1 \
   -datadir=/data -printtoconsole
 ```
 
@@ -163,8 +163,62 @@ Because there is no shell in the image, `docker exec ... sh` will not work. Use
 
 ```bash
 docker run --rm --entrypoint /usr/local/bin/bitcoin-cli \
-  registry.example.com/bitcoin/bitcoind:31.1 -version
+  ghcr.io/thefutoneng/bitcoin:31.1 -version
 ```
+
+## Verifying what you pulled
+
+The published image carries a cosign signature and three attestations:
+provenance, an SPDX SBOM, and a **contents manifest** accounting for every file
+in the image. Verifying is the point of all of it — none of the guarantees in
+this README mean anything to you unless you check them yourself.
+
+Signatures are made two ways. Keyless binds the signature to the release
+workflow that built the image, so you are trusting a specific repo, ref and
+workflow rather than whoever holds a key:
+
+```bash
+cosign verify \
+  --certificate-identity-regexp \
+    '^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/thefutoneng/bitcoin:31.1
+```
+
+The identity is not optional. Without it you would accept a signature from
+anyone Sigstore will issue a certificate to, which is no check at all.
+
+A key-pair signature is also published for offline verification, where Sigstore
+is unreachable. It deliberately carries no transparency-log entry, so add
+`--insecure-ignore-tlog`; that warning is about the absence of a log, not about
+the signature:
+
+```bash
+cosign verify --key cosign.pub --insecure-ignore-tlog \
+  ghcr.io/thefutoneng/bitcoin:31.1
+```
+
+The interesting attestation is the contents manifest. It tells you what is in
+the image and, more usefully, that nothing else is:
+
+```bash
+cosign verify-attestation \
+  --certificate-identity-regexp \
+    '^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --type https://github.com/TheFutonEng/bitcoin/predicate/bitcoind-contents/v1 \
+  ghcr.io/thefutoneng/bitcoin:31.1 \
+  | jq -r .payload | base64 -d | jq '.predicate.counts, .predicate.complete'
+```
+
+`"unaccounted": 0` and `complete: true` mean every file in the image was
+matched to either the digest-pinned base or the signature-verified release
+tarball. Five paths Docker injects into a container at runtime are excluded by
+design — see `DOCKER_RUNTIME_PATHS` in `scripts/verify-contents.sh`.
+
+Swap `--type` for `spdxjson` or the `bitcoind-provenance/v1` type to check the
+other two. `make verify-sig` runs all four checks at once if you would rather
+not type them.
 
 ## Repository layout
 
@@ -197,11 +251,10 @@ sums.
 
 ## Known gaps
 
-- **Publishing and signing are unproven.** `sign`, `attest` and `verify-sig`
-  have never run — they need a registry, a pushed image and a key. `verify-sig`
-  also verifies only one of the three predicates `attest` attaches, so the
-  contents manifest currently has no verification path.
-- **`REGISTRY` is still the placeholder** `registry.example.com/bitcoin`.
+- **Nothing has been published yet.** The signing chain is proven against a
+  local registry — push, sign, three attestations, verification, and it fails
+  closed on a wrong key or a swapped image — but keyless signing and the release
+  workflow itself can only be exercised by a real tag.
 - **No formal negative-test suite.** Individual gates have been proven to fail
   closed — a planted file, a tampered keyring, injected pin drift, an unwritable
   datadir — but those proofs are ad hoc rather than a runnable suite.

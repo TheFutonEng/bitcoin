@@ -126,7 +126,7 @@ ARG SOURCE_REPO="https://example.invalid/REPLACE-ME"
 ARG VCS_REF="unknown"
 ARG BUILD_DATE="1970-01-01T00:00:00Z"
 
-LABEL org.opencontainers.image.title="bitcoind" \
+LABEL org.opencontainers.image.title="bitcoin" \
       org.opencontainers.image.description="Bitcoin Core daemon, built from signature-verified upstream release binaries" \
       org.opencontainers.image.version="${BITCOIN_VERSION}" \
       org.opencontainers.image.licenses="MIT" \

@@ -119,7 +119,7 @@ jobs:
         run: |
           echo "### Published" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "ghcr.io/thefutoneng/bitcoind@$(make digest VERSION=${{ steps.v.outputs.version }})" \
+          echo "ghcr.io/thefutoneng/bitcoin@$(make digest VERSION=${{ steps.v.outputs.version }})" \
             >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 

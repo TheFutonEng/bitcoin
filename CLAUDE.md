@@ -210,6 +210,13 @@ doing something clever, this catches it.
 
 ## What consumers need to know
 
+- The published image is **`ghcr.io/thefutoneng/bitcoin`** — named `bitcoin`,
+  not `bitcoind`, to match what every other Bitcoin Core container is called.
+  The binary inside is still `bitcoind`, and the attestation predicate types
+  stay `bitcoind-*` because they describe the daemon payload rather than the
+  image. That asymmetry is deliberate; do not "fix" it. Changing a predicate
+  type after anything is published breaks verification for every image already
+  signed with the old one.
 - Runs as UID/GID **65532:65532** (distroless `nonroot`). Changes if the runtime
   base changes.
 - Datadir `/data`, declared `VOLUME`, `BITCOIN_DATA=/data`.
@@ -416,6 +423,14 @@ real — what is left is getting the result published and signed.
       pieces are already in place — `--network=none`, staged inputs,
       `SOURCE_DATE_EPOCH` pinned to the commit. What is untested is whether the
       digest actually lands identical; layer timestamps are the usual culprit.
+      One such difference is already fixed: `SOURCE_REPO` came from
+      `git remote get-url origin`, which is the SSH form on a dev box and https
+      under `actions/checkout`. That put two different values in
+      `org.opencontainers.image.source` for the same commit, and therefore two
+      different digests. It is now normalised to https. Expect more of these —
+      anything derived from the local environment rather than from the commit is
+      a candidate.
+
       Try `--output type=image,rewrite-timestamp=true`, then have a second
       machine build the same commit and diff the digests. If it holds, publish
       the expected digest per tag and it becomes a claim anyone can check.

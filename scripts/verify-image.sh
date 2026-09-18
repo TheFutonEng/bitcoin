@@ -5,7 +5,7 @@
 #
 # This works on ANY bitcoind image, not just ours. That is the point:
 #
-#   scripts/verify-image.sh registry.example.com/bitcoin/bitcoind:31.1   # our output
+#   scripts/verify-image.sh ghcr.io/thefutoneng/bitcoin:31.1               # our output
 #   scripts/verify-image.sh bitcoin/bitcoin:31.1                          # theirs
 #
 # Note what this does and does not prove. It proves the binaries are the correct

@@ -6,7 +6,13 @@ PLATFORM      ?= linux/amd64
 # GHCR: lives with the repo, so the published image is the archive, and CI
 # authenticates with the built-in GITHUB_TOKEN rather than a stored credential.
 REGISTRY      ?= ghcr.io/thefutoneng
-IMAGE         ?= $(REGISTRY)/bitcoind
+# `bitcoin`, not `bitcoind`. Every other published Bitcoin Core container is
+# called "bitcoin" — bitcoin/bitcoin, bitcoinknots/bitcoin — and the consumable
+# artifact this repo releases should match that convention rather than invent a
+# name. The predicate types below deliberately stay `bitcoind-*`: they identify a
+# payload describing the daemon, not the image, and changing a predicate type
+# after publishing breaks verification for everything already signed.
+IMAGE         ?= $(REGISTRY)/bitcoin
 TAG           ?= $(VERSION)
 # Pinned by digest (invariant 4). Keep in sync with the ARG in the Dockerfile.
 RUNTIME_BASE  ?= gcr.io/distroless/cc-debian12@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
@@ -33,7 +39,13 @@ COSIGN_ISSUER    ?= https://token.actions.githubusercontent.com
 COSIGN_IDENTITY  ?=
 
 VCS_REF       := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-SOURCE_REPO   := $(shell git remote get-url origin 2>/dev/null || echo unknown)
+# Normalised to a browsable https URL. `git remote get-url` returns the SSH form
+# on a dev box and https under actions/checkout, which would put two different
+# values in org.opencontainers.image.source for the same commit — and therefore
+# produce two different image digests, defeating the reproducible-rebuild goal.
+SOURCE_REPO   := $(shell git remote get-url origin 2>/dev/null \
+                   | sed -e 's#^git@\([^:]*\):#https://\1/#' -e 's#\.git$$##' \
+                   || echo unknown)
 # Pin timestamps to the commit so rebuilds of the same commit are comparable.
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --pretty=%ct 2>/dev/null || echo 0)
 BUILD_DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo 1970-01-01T00:00:00Z)
