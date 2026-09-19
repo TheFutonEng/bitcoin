@@ -38,7 +38,12 @@ COSIGN_ISSUER    ?= https://token.actions.githubusercontent.com
 # The release workflow sets COSIGN_IDENTITY=$(RELEASE_IDENTITY) to check both.
 COSIGN_IDENTITY  ?=
 
-VCS_REF       := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+# Length is pinned. `git rev-parse --short` auto-sizes the abbreviation from the
+# repository's object count, so the same commit can abbreviate to 7 characters in
+# one clone and 8 in another as the repo grows — a different LABEL, and therefore
+# a different image digest, for identical inputs. Same class of problem as the
+# SOURCE_REPO normalisation below.
+VCS_REF       := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 # Normalised to a browsable https URL. `git remote get-url` returns the SSH form
 # on a dev box and https under actions/checkout, which would put two different
 # values in org.opencontainers.image.source for the same commit — and therefore

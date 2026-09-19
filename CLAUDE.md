@@ -358,6 +358,29 @@ real — what is left is getting the result published and signed.
       **private**, so a half-finished publish is invisible until deliberately
       made public, and the version can simply be deleted.
 
+      **Landmines found and fixed in the pre-merge sweep, 2026-09-19.** Three
+      would have bitten on the first tag, and none were reachable by CI:
+
+      - *The runner's default buildx driver cannot do attestations.* `make push`
+        asks for `--provenance=mode=max --sbom=true`, which is the exact thing
+        that broke ci.yml on the `docker` driver with the classic image store.
+        It works on this dev box only because the containerd image store is
+        enabled. The workflow now creates a `docker-container` builder, verified
+        to produce an OCI index carrying the attestation manifest.
+      - *We verified one artifact and published another.* `make build` (`--load`)
+        and `make push` (`--push`) are separate buildx invocations, so
+        verify-image and verify-contents were checking a local image while the
+        registry got a second build. Cache normally makes them identical, but
+        nothing asserted it — meaning the signature could cover something never
+        verified. The pushed image is now re-verified before it is signed.
+      - *Signing tools were fetched unverified.* A repo that admits Bitcoin
+        binaries only on six builder signatures was downloading cosign over
+        HTTPS and trusting it. Both tools are now pinned by version and checked
+        against their published sha256.
+      Also made `buildx create` idempotent. That one is **not** a landmine here
+      — every job runs on `ubuntu-latest`, which is ephemeral, so the instance
+      can never already exist. It is belt and braces for hand invocation.
+
       Then document the pull-and-verify command for consumers in the README.
 - [ ] **Add a rebuild-from-published-image path.** Publishing preserves the old
       image but not the ability to put that Bitcoin version on a *new* base,
@@ -428,6 +451,26 @@ real — what is left is getting the result published and signed.
       which records build args and materials rather than just the build
       definition. It lives on `push` rather than `build` because attestations
       cannot be attached to a `--load`ed image — see the gotcha below.
+- [ ] **Audit every build input for environment dependence.** Two have already
+      been found by accident rather than by looking, both silently producing a
+      different image digest for the same commit: `SOURCE_REPO` was the SSH
+      remote locally and https under `actions/checkout`, and `VCS_REF` used
+      `git rev-parse --short`, whose abbreviation length auto-sizes from the
+      repository's object count. Both are fixed. The remaining inputs —
+      `BITCOIN_VERSION`, `TARGET_TRIPLE`, `RUNTIME_BASE`, `MIN_GOOD_SIGS`,
+      `BUILD_DATE` — are literals, a pinned digest, or derived from the commit
+      timestamp, so they should be deterministic. **"Should be" is the problem:
+      nothing tests it.** Do this as part of the item below, not separately.
+
+      Note the distinction the rest of this file leans on. The image *contents*
+      are genuinely environment-independent: `--network=none`, a digest-pinned
+      base, and vendored inputs verified against a committed keyring.
+      `make verify-contents` returns the same 1664 entries and zero unaccounted
+      on a laptop and on a runner. What is **not** environment-independent is the
+      build *tooling* — buildx driver and image store differ, which is what broke
+      the attestation steps twice — and anything the Makefile computes from the
+      local git checkout.
+
 - [ ] **Reproducible rebuild agreement.** The strongest attestation claim
       available to this repo, and one `bitcoin/bitcoin` does not make: two people
       building the same commit independently get the same image digest. The

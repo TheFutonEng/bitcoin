@@ -72,19 +72,56 @@ jobs:
           echo "version=${ver}" >> "$GITHUB_OUTPUT"
           echo "publishing ${ver}"
 
+      # Pinned by version AND verified by hash. A repo that admits Bitcoin
+      # binaries only on six builder signatures should not fetch the tool it
+      # signs with over plain HTTPS and trust whatever arrives. Hashes are the
+      # published ones from cosign_checksums.txt / syft checksums.txt; bumping a
+      # version means updating the hash in the same reviewed commit.
       - name: Install cosign and syft
+        env:
+          COSIGN_VERSION: v3.1.3
+          COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+          SYFT_VERSION: 1.51.1
+          SYFT_SHA256: 8fcb33017a0dc1058298c923c436d19dfa68ae93968e0b423248542e3afb9fc3
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.local/bin"; echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          curl -sL -o "$HOME/.local/bin/cosign" \
-            https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64
-          chmod +x "$HOME/.local/bin/cosign"
-          curl -sL https://github.com/anchore/syft/releases/download/v1.51.1/syft_1.51.1_linux_amd64.tar.gz \
-            | tar -xz -C "$HOME/.local/bin" syft
-          chmod +x "$HOME/.local/bin/syft"
+
+          curl -sSfL -o /tmp/cosign \
+            "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  /tmp/cosign" | sha256sum -c -
+          install -m 0755 /tmp/cosign "$HOME/.local/bin/cosign"
+
+          curl -sSfL -o /tmp/syft.tgz \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          echo "${SYFT_SHA256}  /tmp/syft.tgz" | sha256sum -c -
+          tar -xzf /tmp/syft.tgz -C /tmp syft
+          install -m 0755 /tmp/syft "$HOME/.local/bin/syft"
+
+          cosign version --json >/dev/null && syft version >/dev/null
+          echo "cosign ${COSIGN_VERSION} and syft ${SYFT_VERSION} verified by hash"
 
       # Never publish something unverified. The whole chain runs first; any
       # failure here means nothing reaches the registry.
+      # `make push` asks for --provenance=mode=max --sbom=true. The runner's
+      # DEFAULT buildx builder uses the `docker` driver with the classic image
+      # store, which cannot do attestations — that is exactly the error that
+      # broke ci.yml ("Attestation is not supported for the docker driver").
+      # It works on a dev box only if the containerd image store is enabled.
+      # A docker-container builder supports them regardless. Verified 2026-09-19:
+      # --push with mode=max through this driver produces an OCI index carrying
+      # the attestation manifest.
+      - name: Set up a buildx builder that supports attestations
+        run: |
+          set -euo pipefail
+          # Idempotent. Not needed on GitHub-hosted runners, which are ephemeral
+          # — this is belt and braces for anyone invoking the same commands by
+          # hand or on a reused runner.
+          docker buildx inspect release >/dev/null 2>&1 \
+            || docker buildx create --name release --driver docker-container
+          docker buildx use release
+          docker buildx inspect --bootstrap
+
       - name: Fetch the release tarball
         run: make fetch-tarball VERSION=${{ steps.v.outputs.version }}
       - name: Verify signatures and digest
@@ -106,6 +143,18 @@ jobs:
 
       - name: Push
         run: make push VERSION=${{ steps.v.outputs.version }}
+
+      # `make build` and `make push` are two separate buildx invocations with
+      # different flags, so the steps above verified the LOCAL image while what
+      # got published came from a second build. Cache normally makes them
+      # identical, but nothing asserted it — which would mean signing an artifact
+      # that was never verified. Re-verify what is actually in the registry
+      # BEFORE signing it.
+      - name: Re-verify the PUSHED image before signing it
+        run: |
+          set -euo pipefail
+          make verify-image    VERSION=${{ steps.v.outputs.version }}
+          make verify-contents VERSION=${{ steps.v.outputs.version }}
 
       # The SBOM is generated from the PUSHED image, so it describes exactly what
       # consumers will pull.
