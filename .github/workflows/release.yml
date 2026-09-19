@@ -107,21 +107,37 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "${{ secrets.COSIGN_PRIVATE_KEY }}" > /tmp/cosign.key
+          # The public half is derived here and deliberately NOT shredded: the
+          # verify step below needs it to check the key-pair signature, and
+          # signing something nothing verifies is the gap this PR exists to
+          # close. It is a public key; only the private half is a secret.
+          cosign public-key --key /tmp/cosign.key > /tmp/cosign.pub
           trap 'shred -u /tmp/cosign.key 2>/dev/null || rm -f /tmp/cosign.key' EXIT
           make sign VERSION=${{ steps.v.outputs.version }} COSIGN_KEY=/tmp/cosign.key
 
+      # Verifies whichever modes were actually used. COSIGN_IDENTITY covers the
+      # keyless signature; COSIGN_PUB is set only when a key pair was used, and
+      # verify-signatures.sh checks a mode only when its config is present.
       - name: Verify the signing chain round-trips
         env:
           COSIGN_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
-        run: make verify-sig VERSION=${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "${HAS_KEY}" = "true" ]; then args+=(COSIGN_PUB=/tmp/cosign.pub); fi
+          make verify-sig VERSION=${{ steps.v.outputs.version }} "${args[@]}"
 
+      # Derived from the Makefile rather than hardcoded, so it cannot drift from
+      # whatever IMAGE actually is.
       - name: Publish the digest
         run: |
+          set -euo pipefail
+          ref="$(make -s digest-ref VERSION=${{ steps.v.outputs.version }})"
           echo "### Published" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "ghcr.io/thefutoneng/bitcoin@$(make digest VERSION=${{ steps.v.outputs.version }})" \
-            >> "$GITHUB_STEP_SUMMARY"
+          echo "${ref}" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "published ${ref}"
 
       - name: Upload attestation inputs
         if: always()

@@ -52,7 +52,7 @@ BUILD_DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>
 
 export SOURCE_DATE_EPOCH
 
-.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest verify-image verify-contents verify-upstream digest sbom sign attest verify-sig clean
+.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig clean
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s$$'\t'
@@ -180,6 +180,9 @@ verify-contents: ## Prove EVERY file in the image is accounted for, not just the
 verify-upstream: ## Same check, run against the third-party bitcoin/bitcoin image
 	BIN_PATH=/opt/bitcoin-$(VERSION)/bin \
 	  scripts/verify-image.sh bitcoin/bitcoin:$(VERSION) $(VERSION) $(TRIPLE)
+
+digest-ref: ## Print the full pinnable reference: IMAGE@sha256:...
+	@echo "$(IMAGE)@$$(docker buildx imagetools inspect $(IMAGE):$(TAG) --format '{{.Manifest.Digest}}')"
 
 digest: ## Print the pushed image digest — publish this, consumers pin it
 	@docker buildx imagetools inspect $(IMAGE):$(TAG) --format '{{.Manifest.Digest}}' 2>/dev/null \

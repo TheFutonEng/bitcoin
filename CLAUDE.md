@@ -341,9 +341,9 @@ real — what is left is getting the result published and signed.
       1. GHCR needs the package to exist and be linked to the repo. The first
          push from `GITHUB_TOKEN` creates it as **private**; make it public and
          link it to the repo in package settings, or consumers cannot pull.
-      2. Optional: add `COSIGN_PRIVATE_KEY` and `COSIGN_PASSWORD` secrets to
-         enable the offline-verifiable mode. Without them the run skips those
-         steps rather than failing, and publishes keyless-signed only.
+      2. Optional, and deliberately deferrable — see "Where the signing key
+         lives" below. Without `COSIGN_PRIVATE_KEY` the run skips those steps
+         rather than failing, and publishes keyless-signed only.
       3. Tag `v31.1` and watch it. `id-token: write` is what makes keyless work;
          without it the run fails *after* the image is public.
 
@@ -537,6 +537,40 @@ real — what is left is getting the result published and signed.
         depends on a third party's Docker Hub tag continuing to exist and keep
         its contents; that is someone else's availability and should not be able
         to turn this repo's CI red. Run it by hand when the claim matters.
+
+## Where the signing key lives
+
+Undecided, and **it does not block publishing**. Verified 2026-09-18: cosign
+signatures are additive. Signing an already-published digest later with a
+different key works — no republish, the digest does not change, and every key's
+signature verifies independently. So publish keyless now and add a key whenever
+the question is actually answered.
+
+**The thing to be clear about before answering it.** A cosign private key stored
+in GitHub Actions secrets is *not* a second, independent trust root. It is the
+same trust root as keyless — "whoever controls this repo's workflows" — in a
+form that happens to verify offline. Anyone who can merge a workflow can use the
+secret. It buys air-gap verifiability, not independence from GitHub. Do not let
+the repo claim otherwise.
+
+The options, and what each is actually for:
+
+- **GitHub Actions secret.** What `release.yml` assumes today. Right choice if
+  the goal is an offline-verifiable signature for consumers who cannot reach
+  Sigstore. Simple, automated, same trust root as keyless.
+- **Signed out of band from a trusted machine.** The private key never touches
+  GitHub. `make sign COSIGN_KEY=...` already works against a published image
+  from anywhere, so this needs no code change — just registry write access and a
+  deliberate step after each release. This is the option that produces a
+  signature GitHub could not forge.
+- **Hardware token or KMS** (`pkcs11:`, `awskms://`, `gcpkms://`,
+  `hashivault://`). Key material is never extractable. The right answer if the
+  signature ever needs to mean something to someone who does not trust you
+  personally, and the wrong amount of machinery before then.
+
+Whichever is chosen, `cosign.pub` belongs in the repo root — consumers need it
+for the offline path the README documents, and a public key is exactly the thing
+a repo is good at distributing.
 
 ## Gotchas
 
