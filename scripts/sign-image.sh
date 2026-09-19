@@ -59,7 +59,29 @@ fi
 # Every predicate must exist. Signing an image while silently omitting the
 # contents manifest would publish exactly the wrong impression.
 for f in provenance.json sbom.spdx.json contents-manifest.json; do
-  [[ -f "$f" ]] || { echo "missing ${f} — run: make verify sbom verify-contents" >&2; exit 1; }
+  [[ -f "$f" ]] && continue
+  {
+    echo "missing ${f}"
+    echo
+    echo "All three predicates must be present; signing an image while silently"
+    echo "omitting the contents manifest would publish the wrong impression."
+    echo
+    echo "If you are signing an image this machine just built:"
+    echo "    make verify sbom verify-contents"
+    echo
+    echo "If you are signing an image that is ALREADY PUBLISHED — adding a"
+    echo "key-pair signature to an existing release, say — do not regenerate"
+    echo "blindly. Prefer the predicates that release actually attested, saved"
+    echo "by the release workflow as the artifact release-<version>-predicates."
+    echo "Using those keeps the key-pair attestations byte-identical to the"
+    echo "keyless ones. Failing that, regenerate them against the PUBLISHED"
+    echo "image rather than a fresh local build:"
+    echo "    make fetch-tarball    VERSION=<version>   # gitignored, may be absent"
+    echo "    make verify           VERSION=<version>"
+    echo "    make verify-contents  IMAGE=<image> TAG=<tag>"
+    echo "    make sbom             IMAGE=<image> TAG=<tag>"
+  } >&2
+  exit 1
 done
 
 # Resolve to a digest. Signing a tag signs a moving target; everything below

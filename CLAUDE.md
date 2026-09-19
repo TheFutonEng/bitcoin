@@ -619,8 +619,22 @@ cosign generate-key-pair                 # writes cosign.key and cosign.pub
 git add cosign.pub && git commit -m "keys: publish cosign public key"
 make check-pins                          # asserts no private key is tracked
 
-# 3. Sign the EXISTING release. Needs GHCR write access; sign the digest, not
-#    the tag, so it cannot drift.
+# 3. Sign the EXISTING release. cosign attaches predicates, so all three must
+#    be on disk first — this step does NOT regenerate them, and the first
+#    attempt at this procedure failed for exactly that reason.
+#
+#    BEST: download the artifact the release run saved, so the key-pair
+#    attestations are byte-identical to the keyless ones.
+#      gh run download <run-id> -n release-31.1-predicates
+#
+#    Otherwise regenerate against the PUBLISHED image, not a fresh local build.
+#    fetch-tarball first: the tarball is gitignored, so a fresh clone has no
+#    copy, and `make verify` checks the vendored tarball's digest.
+make fetch-tarball   VERSION=31.1
+make verify          VERSION=31.1
+make verify-contents IMAGE=ghcr.io/thefutoneng/bitcoin TAG=31.1
+make sbom            IMAGE=ghcr.io/thefutoneng/bitcoin TAG=31.1
+
 docker login ghcr.io
 make sign IMAGE=ghcr.io/thefutoneng/bitcoin TAG=31.1 \
      COSIGN_KEY=./cosign.key
