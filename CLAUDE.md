@@ -333,55 +333,31 @@ real — what is left is getting the result published and signed.
       cosign v3 notes, both found by running it: `--tlog-upload=false` errors
       unless `--use-signing-config=false` is also passed, and predicate types are
       given with `--type`. Verified against v3.1.3.
-- [ ] **First real publish.** The machinery exists — `.github/workflows/release.yml`
-      builds, verifies the whole chain, pushes to GHCR, signs keyless (and with a
-      key if `COSIGN_PRIVATE_KEY` is set), then proves the round trip. It has
-      never run. Before tagging:
+- [x] **First real publish — v31.1, 2026-09-19.**
 
-      1. GHCR needs the package to exist and be linked to the repo. The first
-         push from `GITHUB_TOKEN` creates it as **private**; make it public and
-         link it to the repo in package settings, or consumers cannot pull.
-      2. Optional, and deliberately deferrable — see "Where the signing key
-         lives" below. Without `COSIGN_PRIVATE_KEY` the run skips those steps
-         rather than failing, and publishes keyless-signed only.
-      3. Tag `v31.1` and watch it. `id-token: write` is what makes keyless work.
+      ```
+      ghcr.io/thefutoneng/bitcoin@sha256:35c21e6979a219ac7c292ea7442c8ee3dd4eaa9627fe4b9b8dc7b3e2fea9392e
+      ```
 
-      **Run it from a tag, never from a branch.** `workflow_dispatch` can be
-      launched from either, and a branch run produces a keyless signature whose
-      identity ends `@refs/heads/<branch>` — which the documented consumer
-      command, anchored on `@refs/tags/`, cannot verify. The workflow's own
-      verify step derives the identity from `github.ref` as well, so it would
-      pass: a green run publishing an artifact nobody else can check. A guard
-      step now refuses any non-tag ref outright.
+      That digest is the OCI **index** — image manifest plus attestation
+      manifest — which is what consumers pin. The tag was signed
+      (`git tag -s v31.1`) and verifies against the SSH signing key.
 
-      Blast radius of a failed run is small: GHCR creates the package
-      **private**, so a half-finished publish is invisible until deliberately
-      made public, and the version can simply be deleted.
+      **Verified from a clean machine, not from the runner**, using the exact
+      commands published in the README: signature OK, and all three attestations
+      OK — provenance, SBOM, contents manifest. The contents manifest reads back
+      `total 1664, unaccounted 0, complete true`. That is the whole point of the
+      repo arriving intact at the other end: a consumer can verify, themselves,
+      that nothing else is in the image.
 
-      **Landmines found and fixed in the pre-merge sweep, 2026-09-19.** Three
-      would have bitten on the first tag, and none were reachable by CI:
+      A workflow verifying its own signature proves the plumbing. An outsider
+      verifying it with the published regexp proves the claim. Do the second one
+      after every release.
 
-      - *The runner's default buildx driver cannot do attestations.* `make push`
-        asks for `--provenance=mode=max --sbom=true`, which is the exact thing
-        that broke ci.yml on the `docker` driver with the classic image store.
-        It works on this dev box only because the containerd image store is
-        enabled. The workflow now creates a `docker-container` builder, verified
-        to produce an OCI index carrying the attestation manifest.
-      - *We verified one artifact and published another.* `make build` (`--load`)
-        and `make push` (`--push`) are separate buildx invocations, so
-        verify-image and verify-contents were checking a local image while the
-        registry got a second build. Cache normally makes them identical, but
-        nothing asserted it — meaning the signature could cover something never
-        verified. The pushed image is now re-verified before it is signed.
-      - *Signing tools were fetched unverified.* A repo that admits Bitcoin
-        binaries only on six builder signatures was downloading cosign over
-        HTTPS and trusting it. Both tools are now pinned by version and checked
-        against their published sha256.
-      Also made `buildx create` idempotent. That one is **not** a landmine here
-      — every job runs on `ubuntu-latest`, which is ephemeral, so the instance
-      can never already exist. It is belt and braces for hand invocation.
+      **The GHCR-goes-private worry did not apply** — the package inherited
+      public visibility from the public repo. Anonymous pull token, HTTP 200, no
+      manual step needed.
 
-      Then document the pull-and-verify command for consumers in the README.
 - [ ] **Add a rebuild-from-published-image path.** Publishing preserves the old
       image but not the ability to put that Bitcoin version on a *new* base,
       which is exactly what a distroless CVE demands. Source the binaries from a
@@ -594,7 +570,9 @@ real — what is left is getting the result published and signed.
 
 ## Where the signing key lives
 
-Undecided, and **it does not block publishing**. Verified 2026-09-18: cosign
+Still undecided as of the v31.1 release, which shipped **keyless-only**. That is
+a complete signing story on its own; the key pair adds offline verification, not
+extra trust. Verified 2026-09-18: cosign
 signatures are additive. Signing an already-published digest later with a
 different key works — no republish, the digest does not change, and every key's
 signature verifies independently. So publish keyless now and add a key whenever
@@ -625,6 +603,60 @@ The options, and what each is actually for:
 Whichever is chosen, `cosign.pub` belongs in the repo root — consumers need it
 for the offline path the README documents, and a public key is exactly the thing
 a repo is good at distributing.
+
+### Adding the key pair, including to an image already published
+
+Signatures are additive, so v31.1 does not need republishing. Verified
+2026-09-18: signing an already-published digest with a new key leaves the digest
+unchanged and both signatures verify independently.
+
+```bash
+# 1. Generate. Use a real password; cosign will prompt twice.
+cosign generate-key-pair                 # writes cosign.key and cosign.pub
+
+# 2. Commit ONLY the public half. check-pins.sh fails the build if a private key
+#    ever becomes tracked — .gitignore does not stop `git add -f`.
+git add cosign.pub && git commit -m "keys: publish cosign public key"
+make check-pins                          # asserts no private key is tracked
+
+# 3. Sign the EXISTING release. Needs GHCR write access; sign the digest, not
+#    the tag, so it cannot drift.
+docker login ghcr.io
+make sign IMAGE=ghcr.io/thefutoneng/bitcoin TAG=31.1 \
+     COSIGN_KEY=./cosign.key
+
+# 4. Prove the round trip as a consumer would.
+make verify-sig IMAGE=ghcr.io/thefutoneng/bitcoin TAG=31.1 \
+     COSIGN_PUB=./cosign.pub
+
+# 5. For FUTURE releases, add repo secrets COSIGN_KEY (the private key file's
+#    contents) and COSIGN_PASSWORD. release.yml picks them up automatically.
+```
+
+**The secret is named `COSIGN_KEY`, and the name is load-bearing.** The first
+attempt used `COSIGN_PRIVATE_KEY` in the workflow while the secret was called
+`COSIGN_KEY`; `HAS_KEY` evaluated false, the signing steps skipped, and the run
+would have gone **green having published keyless-only**. A silent downgrade with
+no error. There is now a "Signing plan" step that states which modes will be
+used and raises a workflow warning when the key pair is absent.
+
+Note the same name means two things: the *secret* holds the key's contents, the
+*make variable* `COSIGN_KEY` is a path. The workflow writes one to produce the
+other.
+
+**If the key has a password, `COSIGN_PASSWORD` must also be a secret.** Both
+secrets are set as of 2026-09-19. Verified against a password-protected key that
+the whole CI path works non-interactively: `cosign public-key --key` reads
+`COSIGN_PASSWORD` from the environment, `make sign` passes it through, and the
+derived public key verifies all four checks. A **wrong** password is rejected
+rather than silently skipped, and **no** password exits rc=1 rather than hanging
+— there is no TTY in CI, so it cannot stall the job waiting for a prompt.
+
+**Decide step 5 deliberately.** Putting the private key in GitHub secrets makes
+future releases automatic, and makes the key the same trust root as keyless. Not
+doing it keeps the key yours alone, at the cost of a manual step per release —
+which is exactly steps 3 and 4 above, and they work from any machine with
+registry write access.
 
 ## Gotchas
 

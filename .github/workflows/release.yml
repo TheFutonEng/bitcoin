@@ -39,7 +39,11 @@ jobs:
       # A key pair is optional. Keyless alone is a complete signing story; the
       # key exists for offline verification where Sigstore is unreachable. If the
       # secret is absent the key steps are skipped rather than failing the run.
-      HAS_KEY: ${{ secrets.COSIGN_PRIVATE_KEY != '' }}
+      # The secret is named COSIGN_KEY. Note the name means two different
+      # things either side of this workflow: the SECRET holds the key's
+      # contents, while the make variable COSIGN_KEY is a PATH. The signing step
+      # writes one to a file and passes the other.
+      HAS_KEY: ${{ secrets.COSIGN_KEY != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -122,6 +126,21 @@ jobs:
           docker buildx use release
           docker buildx inspect --bootstrap
 
+      # Say out loud which modes will be used. A misnamed secret previously
+      # meant HAS_KEY was false, the key steps skipped, and the run went green
+      # having published keyless-only — a silent downgrade.
+      - name: Signing plan
+        run: |
+          set -euo pipefail
+          echo "keyless:  yes (identity = this workflow on ${{ github.ref }})"
+          if [ "${HAS_KEY}" = "true" ]; then
+            echo "key pair: yes (COSIGN_KEY secret present)"
+          else
+            echo "key pair: NO — COSIGN_KEY secret is empty or unset."
+            echo "::warning::Publishing keyless-only. The offline-verifiable" \
+                 "signature will be missing; cosign verify --key will not work."
+          fi
+
       - name: Fetch the release tarball
         run: make fetch-tarball VERSION=${{ steps.v.outputs.version }}
       - name: Verify signatures and digest
@@ -172,13 +191,21 @@ jobs:
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
         run: |
           set -euo pipefail
-          printf '%s' "${{ secrets.COSIGN_PRIVATE_KEY }}" > /tmp/cosign.key
+          # Trap FIRST, before anything that can fail. `set -e` with a later
+          # trap would leave the private key on disk if the step between them
+          # errored — e.g. a wrong COSIGN_PASSWORD, which cosign does reject.
+          trap 'shred -u /tmp/cosign.key 2>/dev/null || rm -f /tmp/cosign.key' EXIT
+          umask 077
+          printf '%s' "${{ secrets.COSIGN_KEY }}" > /tmp/cosign.key
+
           # The public half is derived here and deliberately NOT shredded: the
           # verify step below needs it to check the key-pair signature, and
           # signing something nothing verifies is the gap this PR exists to
           # close. It is a public key; only the private half is a secret.
+          # Verified non-interactive against a password-protected key: cosign
+          # reads COSIGN_PASSWORD from the environment, rejects a wrong one, and
+          # exits rather than hanging when none is set (no TTY in CI).
           cosign public-key --key /tmp/cosign.key > /tmp/cosign.pub
-          trap 'shred -u /tmp/cosign.key 2>/dev/null || rm -f /tmp/cosign.key' EXIT
           make sign VERSION=${{ steps.v.outputs.version }} COSIGN_KEY=/tmp/cosign.key
 
       # Verifies whichever modes were actually used. COSIGN_IDENTITY covers the

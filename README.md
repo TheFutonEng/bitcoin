@@ -8,13 +8,16 @@ manifest of everything inside it.
 Scope is deliberately narrow: this repo **builds, verifies, and publishes an
 image**. It says nothing about how you deploy or operate a node.
 
-> **Status: the build and verification chain work end to end.** The allowlist
-> holds 10 Bitcoin Core builders; `make verify` accepts 10 signatures against a
-> threshold of 6 on the real 31.1 release, independently confirmed by Core's own
-> `verify.py`. `make build` runs with no network, `make smoke` boots a regtest
-> node, and `make verify-contents` accounts for every file in the image. CI runs
-> the whole chain on every pull request. Publishing and signing are not done yet
-> — see [Known gaps](#known-gaps).
+> **Status: published.** `ghcr.io/thefutoneng/bitcoin:31.1` is live, keyless-signed,
+> and carries three attestations — provenance, SBOM, and a contents manifest
+> accounting for every file in the image. All four verify from a clean machine
+> using the commands in [Verifying what you pulled](#verifying-what-you-pulled).
+>
+> ```
+> ghcr.io/thefutoneng/bitcoin@sha256:35c21e6979a219ac7c292ea7442c8ee3dd4eaa9627fe4b9b8dc7b3e2fea9392e
+> ```
+>
+> Pin that digest. The tag moves; the digest does not.
 
 ## Why this exists
 
@@ -251,10 +254,10 @@ sums.
 
 ## Known gaps
 
-- **Nothing has been published yet.** The signing chain is proven against a
-  local registry — push, sign, three attestations, verification, and it fails
-  closed on a wrong key or a swapped image — but keyless signing and the release
-  workflow itself can only be exercised by a real tag.
+- **Only keyless-signed so far.** The offline-verifiable key-pair signature is
+  not attached yet, so the `cosign verify --key` path below does not work until
+  `cosign.pub` appears in this repo. Signatures are additive, so it can be added
+  to the already-published digest without republishing.
 - **No formal negative-test suite.** Individual gates have been proven to fail
   closed — a planted file, a tampered keyring, injected pin drift, an unwritable
   datadir — but those proofs are ad hoc rather than a runnable suite.

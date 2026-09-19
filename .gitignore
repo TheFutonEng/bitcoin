@@ -9,3 +9,11 @@ provenance.json
 contents-manifest.json
 sbom.spdx.json
 keys/trusted-fingerprints.txt.candidate
+
+# Private signing keys. cosign.pub is committed on purpose — consumers need it —
+# but the private half must never be. `make check-pins` fails if a private key
+# ever becomes tracked, because .gitignore alone does not protect against
+# `git add -f` or a key that was committed before a rule existed.
+cosign.key
+*.key
+!keys/*.asc
