@@ -13,11 +13,12 @@ name: release
 on:
   push:
     tags: ['v*']
+  # No inputs. The ref IS the version, and the guard below refuses anything that
+  # is not a tag — so dispatch is for re-running a release, launched FROM the
+  # tag. An input would be a second source of truth: dispatching from v31.1
+  # while typing 30.2 would publish 30.2 signed with an identity claiming
+  # refs/tags/v31.1, attesting to the wrong thing.
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Version to build and publish, e.g. 31.1'
-        required: true
 
 permissions:
   contents: read
@@ -68,13 +69,12 @@ jobs:
         id: v
         run: |
           set -euo pipefail
-          if [ -n "${{ inputs.tag }}" ]; then
-            ver='${{ inputs.tag }}'
-          else
-            ver='${{ github.ref_name }}'; ver="${ver#v}"
-          fi
+          # Derived solely from the tag, which the guard above has already
+          # confirmed is a tag. One source of truth for what is being signed.
+          ver='${{ github.ref_name }}'; ver="${ver#v}"
+          [ -n "${ver}" ] || { echo "::error::empty version from ${{ github.ref }}"; exit 1; }
           echo "version=${ver}" >> "$GITHUB_OUTPUT"
-          echo "publishing ${ver}"
+          echo "publishing ${ver} from ${{ github.ref }}"
 
       # Pinned by version AND verified by hash. A repo that admits Bitcoin
       # binaries only on six builder signatures should not fetch the tool it

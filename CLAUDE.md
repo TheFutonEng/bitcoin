@@ -604,6 +604,22 @@ Whichever is chosen, `cosign.pub` belongs in the repo root — consumers need it
 for the offline path the README documents, and a public key is exactly the thing
 a repo is good at distributing.
 
+### Set the signing secrets BEFORE the first tag
+
+Ordering lesson from v31.1, which shipped keyless-only because `COSIGN_KEY` and
+`COSIGN_PASSWORD` did not exist yet. Attaching the key-pair signature afterwards
+by hand cost far more than the two minutes of setting the secrets up front, and
+surfaced three separate obstacles that CI would never have hit: predicates are
+gitignored so they are absent on a fresh clone or a second machine, a local
+`docker login` usually carries only `read:packages` while signing needs write,
+and the signing script forced an empty `COSIGN_PASSWORD` instead of prompting.
+None of that exists in the workflow, where the predicates are already on disk in
+the same job and `GITHUB_TOKEN` carries `packages: write`.
+
+**Prefer re-running the release workflow over signing by hand.** Launch it from
+the tag: `workflow_dispatch` takes no inputs, so the ref is the only source of
+truth, and the non-tag guard refuses anything else.
+
 ### Adding the key pair, including to an image already published
 
 Signatures are additive, so v31.1 does not need republishing. Verified
