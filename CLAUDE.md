@@ -344,8 +344,19 @@ real — what is left is getting the result published and signed.
       2. Optional, and deliberately deferrable — see "Where the signing key
          lives" below. Without `COSIGN_PRIVATE_KEY` the run skips those steps
          rather than failing, and publishes keyless-signed only.
-      3. Tag `v31.1` and watch it. `id-token: write` is what makes keyless work;
-         without it the run fails *after* the image is public.
+      3. Tag `v31.1` and watch it. `id-token: write` is what makes keyless work.
+
+      **Run it from a tag, never from a branch.** `workflow_dispatch` can be
+      launched from either, and a branch run produces a keyless signature whose
+      identity ends `@refs/heads/<branch>` — which the documented consumer
+      command, anchored on `@refs/tags/`, cannot verify. The workflow's own
+      verify step derives the identity from `github.ref` as well, so it would
+      pass: a green run publishing an artifact nobody else can check. A guard
+      step now refuses any non-tag ref outright.
+
+      Blast radius of a failed run is small: GHCR creates the package
+      **private**, so a half-finished publish is invisible until deliberately
+      made public, and the version can simply be deleted.
 
       Then document the pull-and-verify command for consumers in the README.
 - [ ] **Add a rebuild-from-published-image path.** Publishing preserves the old

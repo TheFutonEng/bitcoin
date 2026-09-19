@@ -43,6 +43,23 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Publishing from a branch produces a keyless signature whose identity ends
+      # @refs/heads/<branch>, which the documented consumer command — anchored on
+      # @refs/tags/ — cannot verify. The workflow's own verify step derives the
+      # identity from github.ref too, so it would pass: a green run publishing an
+      # artifact nobody else can check. workflow_dispatch is still useful for
+      # re-running a release, but it must be launched FROM THE TAG.
+      - name: Refuse to publish from a non-tag ref
+        run: |
+          set -euo pipefail
+          case "${{ github.ref }}" in
+            refs/tags/*) echo "ref is a tag: ${{ github.ref }}" ;;
+            *) echo "::error::Refusing to publish from ${{ github.ref }}." \
+                    "Keyless signatures made here end @refs/heads/... and cannot be" \
+                    "verified with the documented command. Re-run this workflow" \
+                    "selecting the tag, not a branch."; exit 1 ;;
+          esac
+
       - name: Resolve version
         id: v
         run: |
