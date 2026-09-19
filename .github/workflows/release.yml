@@ -1,0 +1,218 @@
+name: release
+
+# Publishes a signed, attested image to GHCR on a version tag.
+#
+# The identity that `make verify-sig` expects for keyless verification is this
+# workflow, on a tag — see RELEASE_IDENTITY in the Makefile. Renaming this file
+# or changing the tag pattern breaks verification for everything already
+# published, so do both together if ever needed.
+#
+# This is the only workflow with write access or secrets. ci.yml is triggered by
+# pull requests, including from forks, and deliberately has neither.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version to build and publish, e.g. 31.1'
+        required: true
+
+permissions:
+  contents: read
+  packages: write   # push to GHCR
+  id-token: write   # REQUIRED for keyless signing — without it cosign has no
+                    # OIDC token and the keyless step fails at the end, after
+                    # the image is already public.
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false   # never interrupt a publish midway
+
+jobs:
+  publish:
+    name: build, publish, sign
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # A key pair is optional. Keyless alone is a complete signing story; the
+      # key exists for offline verification where Sigstore is unreachable. If the
+      # secret is absent the key steps are skipped rather than failing the run.
+      HAS_KEY: ${{ secrets.COSIGN_PRIVATE_KEY != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Publishing from a branch produces a keyless signature whose identity ends
+      # @refs/heads/<branch>, which the documented consumer command — anchored on
+      # @refs/tags/ — cannot verify. The workflow's own verify step derives the
+      # identity from github.ref too, so it would pass: a green run publishing an
+      # artifact nobody else can check. workflow_dispatch is still useful for
+      # re-running a release, but it must be launched FROM THE TAG.
+      - name: Refuse to publish from a non-tag ref
+        run: |
+          set -euo pipefail
+          case "${{ github.ref }}" in
+            refs/tags/*) echo "ref is a tag: ${{ github.ref }}" ;;
+            *) echo "::error::Refusing to publish from ${{ github.ref }}." \
+                    "Keyless signatures made here end @refs/heads/... and cannot be" \
+                    "verified with the documented command. Re-run this workflow" \
+                    "selecting the tag, not a branch."; exit 1 ;;
+          esac
+
+      - name: Resolve version
+        id: v
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.tag }}" ]; then
+            ver='${{ inputs.tag }}'
+          else
+            ver='${{ github.ref_name }}'; ver="${ver#v}"
+          fi
+          echo "version=${ver}" >> "$GITHUB_OUTPUT"
+          echo "publishing ${ver}"
+
+      # Pinned by version AND verified by hash. A repo that admits Bitcoin
+      # binaries only on six builder signatures should not fetch the tool it
+      # signs with over plain HTTPS and trust whatever arrives. Hashes are the
+      # published ones from cosign_checksums.txt / syft checksums.txt; bumping a
+      # version means updating the hash in the same reviewed commit.
+      - name: Install cosign and syft
+        env:
+          COSIGN_VERSION: v3.1.3
+          COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+          SYFT_VERSION: 1.51.1
+          SYFT_SHA256: 8fcb33017a0dc1058298c923c436d19dfa68ae93968e0b423248542e3afb9fc3
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"; echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+          curl -sSfL -o /tmp/cosign \
+            "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  /tmp/cosign" | sha256sum -c -
+          install -m 0755 /tmp/cosign "$HOME/.local/bin/cosign"
+
+          curl -sSfL -o /tmp/syft.tgz \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          echo "${SYFT_SHA256}  /tmp/syft.tgz" | sha256sum -c -
+          tar -xzf /tmp/syft.tgz -C /tmp syft
+          install -m 0755 /tmp/syft "$HOME/.local/bin/syft"
+
+          cosign version --json >/dev/null && syft version >/dev/null
+          echo "cosign ${COSIGN_VERSION} and syft ${SYFT_VERSION} verified by hash"
+
+      # Never publish something unverified. The whole chain runs first; any
+      # failure here means nothing reaches the registry.
+      # `make push` asks for --provenance=mode=max --sbom=true. The runner's
+      # DEFAULT buildx builder uses the `docker` driver with the classic image
+      # store, which cannot do attestations — that is exactly the error that
+      # broke ci.yml ("Attestation is not supported for the docker driver").
+      # It works on a dev box only if the containerd image store is enabled.
+      # A docker-container builder supports them regardless. Verified 2026-09-19:
+      # --push with mode=max through this driver produces an OCI index carrying
+      # the attestation manifest.
+      - name: Set up a buildx builder that supports attestations
+        run: |
+          set -euo pipefail
+          # Idempotent. Not needed on GitHub-hosted runners, which are ephemeral
+          # — this is belt and braces for anyone invoking the same commands by
+          # hand or on a reused runner.
+          docker buildx inspect release >/dev/null 2>&1 \
+            || docker buildx create --name release --driver docker-container
+          docker buildx use release
+          docker buildx inspect --bootstrap
+
+      - name: Fetch the release tarball
+        run: make fetch-tarball VERSION=${{ steps.v.outputs.version }}
+      - name: Verify signatures and digest
+        run: make verify VERSION=${{ steps.v.outputs.version }}
+      - name: Cross-check against Core's verify.py
+        run: make cross-check VERSION=${{ steps.v.outputs.version }}
+      - name: Build
+        run: make build VERSION=${{ steps.v.outputs.version }}
+      - name: Smoke test
+        run: make smoke VERSION=${{ steps.v.outputs.version }}
+      - name: Verify image binaries
+        run: make verify-image VERSION=${{ steps.v.outputs.version }}
+      - name: Verify image contents
+        run: make verify-contents VERSION=${{ steps.v.outputs.version }}
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" \
+          | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Push
+        run: make push VERSION=${{ steps.v.outputs.version }}
+
+      # `make build` and `make push` are two separate buildx invocations with
+      # different flags, so the steps above verified the LOCAL image while what
+      # got published came from a second build. Cache normally makes them
+      # identical, but nothing asserted it — which would mean signing an artifact
+      # that was never verified. Re-verify what is actually in the registry
+      # BEFORE signing it.
+      - name: Re-verify the PUSHED image before signing it
+        run: |
+          set -euo pipefail
+          make verify-image    VERSION=${{ steps.v.outputs.version }}
+          make verify-contents VERSION=${{ steps.v.outputs.version }}
+
+      # The SBOM is generated from the PUSHED image, so it describes exactly what
+      # consumers will pull.
+      - name: Generate SBOM
+        run: make sbom VERSION=${{ steps.v.outputs.version }}
+
+      - name: Sign — keyless
+        env:
+          COSIGN_KEYLESS: '1'
+        run: make sign VERSION=${{ steps.v.outputs.version }}
+
+      - name: Sign — key pair
+        if: env.HAS_KEY == 'true'
+        env:
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${{ secrets.COSIGN_PRIVATE_KEY }}" > /tmp/cosign.key
+          # The public half is derived here and deliberately NOT shredded: the
+          # verify step below needs it to check the key-pair signature, and
+          # signing something nothing verifies is the gap this PR exists to
+          # close. It is a public key; only the private half is a secret.
+          cosign public-key --key /tmp/cosign.key > /tmp/cosign.pub
+          trap 'shred -u /tmp/cosign.key 2>/dev/null || rm -f /tmp/cosign.key' EXIT
+          make sign VERSION=${{ steps.v.outputs.version }} COSIGN_KEY=/tmp/cosign.key
+
+      # Verifies whichever modes were actually used. COSIGN_IDENTITY covers the
+      # keyless signature; COSIGN_PUB is set only when a key pair was used, and
+      # verify-signatures.sh checks a mode only when its config is present.
+      - name: Verify the signing chain round-trips
+        env:
+          COSIGN_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "${HAS_KEY}" = "true" ]; then args+=(COSIGN_PUB=/tmp/cosign.pub); fi
+          make verify-sig VERSION=${{ steps.v.outputs.version }} "${args[@]}"
+
+      # Derived from the Makefile rather than hardcoded, so it cannot drift from
+      # whatever IMAGE actually is.
+      - name: Publish the digest
+        run: |
+          set -euo pipefail
+          ref="$(make -s digest-ref VERSION=${{ steps.v.outputs.version }})"
+          echo "### Published" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "${ref}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "published ${ref}"
+
+      - name: Upload attestation inputs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ steps.v.outputs.version }}-predicates
+          path: |
+            provenance.json
+            sbom.spdx.json
+            contents-manifest.json
+          if-no-files-found: warn
+          retention-days: 90

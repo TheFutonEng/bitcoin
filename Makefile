@@ -3,8 +3,16 @@ SHELL := /usr/bin/env bash
 VERSION       ?= 31.1
 TRIPLE        ?= x86_64-linux-gnu
 PLATFORM      ?= linux/amd64
-REGISTRY      ?= registry.example.com/bitcoin
-IMAGE         ?= $(REGISTRY)/bitcoind
+# GHCR: lives with the repo, so the published image is the archive, and CI
+# authenticates with the built-in GITHUB_TOKEN rather than a stored credential.
+REGISTRY      ?= ghcr.io/thefutoneng
+# `bitcoin`, not `bitcoind`. Every other published Bitcoin Core container is
+# called "bitcoin" — bitcoin/bitcoin, bitcoinknots/bitcoin — and the consumable
+# artifact this repo releases should match that convention rather than invent a
+# name. The predicate types below deliberately stay `bitcoind-*`: they identify a
+# payload describing the daemon, not the image, and changing a predicate type
+# after publishing breaks verification for everything already signed.
+IMAGE         ?= $(REGISTRY)/bitcoin
 TAG           ?= $(VERSION)
 # Pinned by digest (invariant 4). Keep in sync with the ARG in the Dockerfile.
 RUNTIME_BASE  ?= gcr.io/distroless/cc-debian12@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
@@ -12,15 +20,44 @@ MIN_GOOD_SIGS ?= 6
 # Seconds `make smoke` waits for the regtest node to finish loading.
 SMOKE_TIMEOUT ?= 60
 
-VCS_REF       := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-SOURCE_REPO   := $(shell git remote get-url origin 2>/dev/null || echo unknown)
+# Attestation predicate types. These are identifiers, not URLs to fetch; they
+# only need to be stable and unambiguous. spdxjson is cosign's built-in type.
+PRED_PROVENANCE ?= https://github.com/TheFutonEng/bitcoin/predicate/bitcoind-provenance/v1
+PRED_CONTENTS   ?= https://github.com/TheFutonEng/bitcoin/predicate/bitcoind-contents/v1
+export PRED_PROVENANCE PRED_CONTENTS
+
+# Keyless verification must name the identity it expects, or it would accept a
+# signature from anyone Sigstore will issue a certificate to. This is the release
+# workflow running on a tag.
+RELEASE_IDENTITY ?= ^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/
+COSIGN_ISSUER    ?= https://token.actions.githubusercontent.com
+
+# Empty by default, on purpose. `verify-signatures.sh` checks a mode only when
+# its config is present, so a local run with just a public key checks the
+# key-pair mode and does not fail on a keyless signature that was never made.
+# The release workflow sets COSIGN_IDENTITY=$(RELEASE_IDENTITY) to check both.
+COSIGN_IDENTITY  ?=
+
+# Length is pinned. `git rev-parse --short` auto-sizes the abbreviation from the
+# repository's object count, so the same commit can abbreviate to 7 characters in
+# one clone and 8 in another as the repo grows — a different LABEL, and therefore
+# a different image digest, for identical inputs. Same class of problem as the
+# SOURCE_REPO normalisation below.
+VCS_REF       := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+# Normalised to a browsable https URL. `git remote get-url` returns the SSH form
+# on a dev box and https under actions/checkout, which would put two different
+# values in org.opencontainers.image.source for the same commit — and therefore
+# produce two different image digests, defeating the reproducible-rebuild goal.
+SOURCE_REPO   := $(shell git remote get-url origin 2>/dev/null \
+                   | sed -e 's#^git@\([^:]*\):#https://\1/#' -e 's#\.git$$##' \
+                   || echo unknown)
 # Pin timestamps to the commit so rebuilds of the same commit are comparable.
 SOURCE_DATE_EPOCH ?= $(shell git log -1 --pretty=%ct 2>/dev/null || echo 0)
 BUILD_DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo 1970-01-01T00:00:00Z)
 
 export SOURCE_DATE_EPOCH
 
-.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke verify-image verify-contents verify-upstream digest sbom sign attest verify-sig clean
+.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig clean
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s$$'\t'
@@ -149,33 +186,27 @@ verify-upstream: ## Same check, run against the third-party bitcoin/bitcoin imag
 	BIN_PATH=/opt/bitcoin-$(VERSION)/bin \
 	  scripts/verify-image.sh bitcoin/bitcoin:$(VERSION) $(VERSION) $(TRIPLE)
 
-digest: ## Print the image digest — publish this, consumers pin it
-	@docker inspect --format='{{index .RepoDigests 0}}' $(IMAGE):$(TAG) 2>/dev/null \
-	  || echo "not pushed yet — run: docker push $(IMAGE):$(TAG)"
+digest-ref: ## Print the full pinnable reference: IMAGE@sha256:...
+	@echo "$(IMAGE)@$$(docker buildx imagetools inspect $(IMAGE):$(TAG) --format '{{.Manifest.Digest}}')"
 
-sbom: ## Generate an SBOM alongside the image
+digest: ## Print the pushed image digest — publish this, consumers pin it
+	@docker buildx imagetools inspect $(IMAGE):$(TAG) --format '{{.Manifest.Digest}}' 2>/dev/null \
+	  || echo "not pushed yet — run: make push"
+
+sbom: ## Generate an SBOM from the pushed image
 	syft $(IMAGE):$(TAG) -o spdx-json=sbom.spdx.json
 
-sign: ## cosign sign the pushed image
-	cosign sign --key $(COSIGN_KEY) $$(docker inspect --format='{{index .RepoDigests 0}}' $(IMAGE):$(TAG))
+# `sign` and `attest` are the same operation — cosign attaches the signature and
+# the three predicates to one digest — so they are one script and one target.
+# `attest` is kept as an alias because the documented workflow named it.
+sign: ## Sign the pushed image and attach all three attestations
+	scripts/sign-image.sh $(IMAGE):$(TAG)
 
-attest: ## Attach the provenance record + SBOM as attestations
-	cosign attest --key $(COSIGN_KEY) \
-	  --predicate provenance.json \
-	  --type https://example.invalid/bitcoind-provenance/v1 \
-	  $$(docker inspect --format='{{index .RepoDigests 0}}' $(IMAGE):$(TAG))
-	cosign attest --key $(COSIGN_KEY) \
-	  --predicate sbom.spdx.json --type spdxjson \
-	  $$(docker inspect --format='{{index .RepoDigests 0}}' $(IMAGE):$(TAG))
-	cosign attest --key $(COSIGN_KEY) \
-	  --predicate contents-manifest.json \
-	  --type https://example.invalid/bitcoind-contents/v1 \
-	  $$(docker inspect --format='{{index .RepoDigests 0}}' $(IMAGE):$(TAG))
+attest: sign ## Alias for sign — cosign attaches signature and predicates together
 
-verify-sig: ## Verify the signature and attestations round-trip
-	cosign verify --key $(COSIGN_KEY).pub $(IMAGE):$(TAG)
-	cosign verify-attestation --key $(COSIGN_KEY).pub \
-	  --type https://example.invalid/bitcoind-provenance/v1 $(IMAGE):$(TAG)
+verify-sig: ## Prove the signature AND all three attestations round-trip
+	COSIGN_IDENTITY='$(COSIGN_IDENTITY)' COSIGN_ISSUER='$(COSIGN_ISSUER)' \
+	  scripts/verify-signatures.sh $(IMAGE):$(TAG)
 
 clean:
 	rm -f provenance.json sbom.spdx.json contents-manifest.json
