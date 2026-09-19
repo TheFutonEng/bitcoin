@@ -94,6 +94,28 @@ else
   fi
 fi
 
+# A committed private signing key is unrecoverable: it is in the history, in
+# every clone, and on GitHub. .gitignore does not prevent `git add -f`, and does
+# nothing about a key committed before the rule existed. This is the check that
+# actually holds.
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  # The needle is assembled at runtime so this file does not match its own
+  # pattern — the first version of this check cheerfully reported itself.
+  needle="PRIVATE"" KEY"
+  leaked="$(git ls-files -z 2>/dev/null | xargs -0 grep -lI -- "${needle}" 2>/dev/null || true)"
+  leaked="$(printf '%s\n%s\n' "${leaked}" \
+              "$(git ls-files '*.key' 'cosign.key' 2>/dev/null || true)" \
+            | grep -v '^$' | sort -u || true)"
+  if [[ -n "${leaked//[[:space:]]/}" ]]; then
+    while read -r f; do
+      [[ -n "$f" ]] && printf '  FAIL  %-18s %s is TRACKED and looks like a private key\n' "secrets" "$f"
+    done <<< "${leaked}"
+    fail=1
+  else
+    printf '  OK    %-18s no private key material is tracked\n' "secrets"
+  fi
+fi
+
 echo
 if (( fail )); then
   echo "FAIL — values disagree, base is unpinned, or the keyring does not match" >&2
