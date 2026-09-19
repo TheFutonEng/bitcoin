@@ -604,6 +604,22 @@ Whichever is chosen, `cosign.pub` belongs in the repo root — consumers need it
 for the offline path the README documents, and a public key is exactly the thing
 a repo is good at distributing.
 
+### Set the signing secrets BEFORE the first tag
+
+Ordering lesson from v31.1, which shipped keyless-only because `COSIGN_KEY` and
+`COSIGN_PASSWORD` did not exist yet. Attaching the key-pair signature afterwards
+by hand cost far more than the two minutes of setting the secrets up front, and
+surfaced three separate obstacles that CI would never have hit: predicates are
+gitignored so they are absent on a fresh clone or a second machine, a local
+`docker login` usually carries only `read:packages` while signing needs write,
+and the signing script forced an empty `COSIGN_PASSWORD` instead of prompting.
+None of that exists in the workflow, where the predicates are already on disk in
+the same job and `GITHUB_TOKEN` carries `packages: write`.
+
+**Prefer re-running the release workflow over signing by hand.** Launch it from
+the tag: `workflow_dispatch` takes no inputs, so the ref is the only source of
+truth, and the non-tag guard refuses anything else.
+
 ### Adding the key pair, including to an image already published
 
 Signatures are additive, so v31.1 does not need republishing. Verified
@@ -619,8 +635,22 @@ cosign generate-key-pair                 # writes cosign.key and cosign.pub
 git add cosign.pub && git commit -m "keys: publish cosign public key"
 make check-pins                          # asserts no private key is tracked
 
-# 3. Sign the EXISTING release. Needs GHCR write access; sign the digest, not
-#    the tag, so it cannot drift.
+# 3. Sign the EXISTING release. cosign attaches predicates, so all three must
+#    be on disk first — this step does NOT regenerate them, and the first
+#    attempt at this procedure failed for exactly that reason.
+#
+#    BEST: download the artifact the release run saved, so the key-pair
+#    attestations are byte-identical to the keyless ones.
+#      gh run download <run-id> -n release-31.1-predicates
+#
+#    Otherwise regenerate against the PUBLISHED image, not a fresh local build.
+#    fetch-tarball first: the tarball is gitignored, so a fresh clone has no
+#    copy, and `make verify` checks the vendored tarball's digest.
+make fetch-tarball   VERSION=31.1
+make verify          VERSION=31.1
+make verify-contents IMAGE=ghcr.io/thefutoneng/bitcoin TAG=31.1
+make sbom            IMAGE=ghcr.io/thefutoneng/bitcoin TAG=31.1
+
 docker login ghcr.io
 make sign IMAGE=ghcr.io/thefutoneng/bitcoin TAG=31.1 \
      COSIGN_KEY=./cosign.key

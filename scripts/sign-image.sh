@@ -32,7 +32,8 @@
 #
 # env:
 #   COSIGN_KEY=        path to a cosign private key — enables key-pair signing
-#   COSIGN_PASSWORD=   password for it (may be empty)
+#   COSIGN_PASSWORD=   password for that key. Leave it UNSET to be prompted;
+#                      set it (even to empty) to pass it through non-interactively
 #   COSIGN_KEYLESS=1   enables keyless signing (CI)
 #   COSIGN_EXTRA=      extra cosign flags, e.g. --allow-insecure-registry
 #
@@ -59,7 +60,29 @@ fi
 # Every predicate must exist. Signing an image while silently omitting the
 # contents manifest would publish exactly the wrong impression.
 for f in provenance.json sbom.spdx.json contents-manifest.json; do
-  [[ -f "$f" ]] || { echo "missing ${f} — run: make verify sbom verify-contents" >&2; exit 1; }
+  [[ -f "$f" ]] && continue
+  {
+    echo "missing ${f}"
+    echo
+    echo "All three predicates must be present; signing an image while silently"
+    echo "omitting the contents manifest would publish the wrong impression."
+    echo
+    echo "If you are signing an image this machine just built:"
+    echo "    make verify sbom verify-contents"
+    echo
+    echo "If you are signing an image that is ALREADY PUBLISHED — adding a"
+    echo "key-pair signature to an existing release, say — do not regenerate"
+    echo "blindly. Prefer the predicates that release actually attested, saved"
+    echo "by the release workflow as the artifact release-<version>-predicates."
+    echo "Using those keeps the key-pair attestations byte-identical to the"
+    echo "keyless ones. Failing that, regenerate them against the PUBLISHED"
+    echo "image rather than a fresh local build:"
+    echo "    make fetch-tarball    VERSION=<version>   # gitignored, may be absent"
+    echo "    make verify           VERSION=<version>"
+    echo "    make verify-contents  IMAGE=<image> TAG=<tag>"
+    echo "    make sbom             IMAGE=<image> TAG=<tag>"
+  } >&2
+  exit 1
 done
 
 # Resolve to a digest. Signing a tag signs a moving target; everything below
@@ -80,9 +103,21 @@ fi
 REF="${base}@${digest}"
 echo "   ${REF}"
 
-sign_key()    { COSIGN_PASSWORD="${COSIGN_PASSWORD:-}" cosign sign --key "${COSIGN_KEY}" \
+# Do NOT force COSIGN_PASSWORD into the environment when the caller did not set
+# it. `${COSIGN_PASSWORD:-}` substitutes an empty string for an UNSET variable,
+# which cosign reads as "the password is empty" — so it never prompts, and a
+# password-protected key fails with a bare "decryption failed" having never
+# asked. `${VAR+x}` distinguishes unset from set-but-empty, so an explicitly
+# empty password still works for an unencrypted key, and an unset one lets
+# cosign prompt interactively (or fail fast in CI, where there is no TTY).
+# An ARRAY, not command substitution: a password containing a space or a glob
+# character would be word-split by an unquoted $(...) and silently mangled.
+PWENV=()
+[[ -n "${COSIGN_PASSWORD+x}" ]] && PWENV=(env "COSIGN_PASSWORD=${COSIGN_PASSWORD}")
+
+sign_key()    { "${PWENV[@]}" cosign sign --key "${COSIGN_KEY}" \
                   --use-signing-config=false --tlog-upload=false --yes "${EXTRA[@]}" "$@"; }
-attest_key()  { COSIGN_PASSWORD="${COSIGN_PASSWORD:-}" cosign attest --key "${COSIGN_KEY}" \
+attest_key()  { "${PWENV[@]}" cosign attest --key "${COSIGN_KEY}" \
                   --use-signing-config=false --tlog-upload=false --yes "${EXTRA[@]}" "$@"; }
 
 if (( key_mode )); then
