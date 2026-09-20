@@ -22,7 +22,14 @@ ARG TARGET_TRIPLE=x86_64-linux-gnu
 # s390x), so multi-arch still works. To bump: re-resolve the tag, update here
 # AND in the Makefile, then re-run `make smoke verify-image verify-contents`.
 ARG RUNTIME_BASE=gcr.io/distroless/cc-debian12@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
-ARG VERIFIER_BASE=debian:bookworm-slim
+# Pinned by digest, like the runtime base. This stage is where signatures are
+# actually verified, so a compromised or silently-updated base here is worse
+# than one in the runtime image: a `gpgv` that emits fabricated VALIDSIG lines
+# would defeat the threshold check entirely, and the resulting image would look
+# perfectly legitimate. It was left on a floating tag until 2026-09-20 because
+# invariant 5 said "runtime base" and nobody re-read it against this line.
+# OCI index (amd64, arm64/v8, arm/v7), so multi-arch survives the pin.
+ARG VERIFIER_BASE=debian@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
 # ---------------------------------------------------------------------------
 # Stage 1: verify + unpack

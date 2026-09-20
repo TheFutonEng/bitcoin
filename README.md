@@ -73,7 +73,8 @@ was already fine.
    `keys/trusted-fingerprints.txt`.
 4. **Importable is not trusted.** Presence in `keys/` gets a key imported;
    presence in `trusted-fingerprints.txt` is what makes its signature count.
-5. **The runtime base image is pinned by digest**, never by tag.
+5. **Every base image is pinned by digest**, never by tag — both the runtime
+   base and the throwaway verifier stage that checks the signatures.
 6. **Verification logic is intentionally duplicated** in the `Dockerfile` and
    `scripts/verify.sh`, so that a standalone check — on an air-gapped host, as a
    pre-commit gate, or in future CI — and the image build enforce the same
