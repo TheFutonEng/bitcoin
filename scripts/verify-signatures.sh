@@ -24,7 +24,6 @@
 set -euo pipefail
 
 IMAGE_REF="${1:?usage: verify-signatures.sh <image-ref>}"
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 PRED_PROVENANCE="${PRED_PROVENANCE:-https://github.com/TheFutonEng/bitcoin/predicate/bitcoind-provenance/v1}"
 PRED_CONTENTS="${PRED_CONTENTS:-https://github.com/TheFutonEng/bitcoin/predicate/bitcoind-contents/v1}"

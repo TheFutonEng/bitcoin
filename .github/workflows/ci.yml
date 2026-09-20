@@ -121,6 +121,17 @@ jobs:
       - name: make check-pins
         run: make check-pins
 
+      # Every verification gate in this repo is a shell script, so the scripts
+      # ARE the security boundary. shellcheck was never run against them until
+      # an external review asked for it and found four issues — three of them
+      # unquoted expansions in exactly the code that parses signature output.
+      - name: shellcheck
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --version | grep version:
+          shellcheck scripts/*.sh
+
   # The real chain. Downloads only the tarball; SHA256SUMS and its signature
   # come from git, so this proves the committed trust anchor admits the bytes
   # upstream is actually serving.

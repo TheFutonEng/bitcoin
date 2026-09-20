@@ -63,10 +63,25 @@ n_groups="$(awk '{print $1}' "${tmp}/index" | sort -u | wc -l)"
 n_win="$(grep -c "^${winner} " "${tmp}/index")"
 n_all="$(wc -l < "${tmp}/index")"
 
+# Builders disagreeing on the sums for a reproducible build is not a quorum
+# question — it means at least one of them built something different, or a copy
+# has been tampered with. Taking the majority turns that into a shrug. Refuse by
+# default; GUIX_SIGS_ALLOW_DISAGREEMENT=1 is an explicit, auditable override for
+# someone who has investigated and decided the majority is right.
+#
+# Note the threshold check downstream still applies to whichever content is
+# chosen, so this was never a threshold bypass — it is about not silently
+# picking a side in a disagreement that should stop the line.
 if (( n_groups > 1 )); then
-  echo "WARNING: builders do not agree on ${SUMS_VARIANT}.SHA256SUMS for ${VERSION}" >&2
-  echo "  ${n_groups} distinct contents across ${n_all} signers; using the majority (${n_win})." >&2
-  echo "  For a reproducible build this should not happen. Investigate before trusting it." >&2
+  echo "builders do not agree on ${SUMS_VARIANT}.SHA256SUMS for ${VERSION}" >&2
+  echo "  ${n_groups} distinct contents across ${n_all} signers; largest group is ${n_win}." >&2
+  echo "  For a reproducible build this should not happen at all." >&2
+  if [[ "${GUIX_SIGS_ALLOW_DISAGREEMENT:-0}" != "1" ]]; then
+    echo "  Refusing to choose. Investigate, then re-run with" >&2
+    echo "  GUIX_SIGS_ALLOW_DISAGREEMENT=1 if the majority is genuinely correct." >&2
+    exit 1
+  fi
+  echo "  GUIX_SIGS_ALLOW_DISAGREEMENT=1 — proceeding with the majority." >&2
 fi
 
 # Emit the agreed sums, and every signature over exactly that content.

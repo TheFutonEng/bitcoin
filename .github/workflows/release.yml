@@ -19,6 +19,11 @@ on:
   # while typing 30.2 would publish 30.2 signed with an identity claiming
   # refs/tags/v31.1, attesting to the wrong thing.
   workflow_dispatch:
+    inputs:
+      allow_keyless_only:
+        description: 'Publish without the key-pair signature (breaks cosign verify --key)'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -38,8 +43,13 @@ jobs:
     timeout-minutes: 30
     env:
       # A key pair is optional. Keyless alone is a complete signing story; the
-      # key exists for offline verification where Sigstore is unreachable. If the
-      # secret is absent the key steps are skipped rather than failing the run.
+      # key exists for offline verification where Sigstore is unreachable.
+      #
+      # A missing key is now a FAILURE, not a warning. Once cosign.pub is
+      # published, the README tells consumers to use `cosign verify --key`, and a
+      # release without that signature silently breaks it for them. An external
+      # review noted a release could otherwise downgrade to keyless-only while
+      # reporting success. Use the allow_keyless_only input to do it on purpose.
       # The secret is named COSIGN_KEY. Note the name means two different
       # things either side of this workflow: the SECRET holds the key's
       # contents, while the make variable COSIGN_KEY is a PATH. The signing step
@@ -135,10 +145,16 @@ jobs:
           echo "keyless:  yes (identity = this workflow on ${{ github.ref }})"
           if [ "${HAS_KEY}" = "true" ]; then
             echo "key pair: yes (COSIGN_KEY secret present)"
+          elif [ "${{ inputs.allow_keyless_only }}" = "true" ]; then
+            echo "key pair: NO — deliberately allowed via allow_keyless_only."
+            echo "::warning::Publishing keyless-only by explicit request." \
+                 "cosign verify --key will not work for this release."
           else
-            echo "key pair: NO — COSIGN_KEY secret is empty or unset."
-            echo "::warning::Publishing keyless-only. The offline-verifiable" \
-                 "signature will be missing; cosign verify --key will not work."
+            echo "::error::COSIGN_KEY secret is empty or unset." \
+                 "cosign.pub is published, so the README tells consumers to run" \
+                 "cosign verify --key, which would fail for this release." \
+                 "Set the secret, or re-run with allow_keyless_only=true."
+            exit 1
           fi
 
       - name: Fetch the release tarball

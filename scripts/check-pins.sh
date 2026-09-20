@@ -86,19 +86,34 @@ if [[ ! -f "${KEYRING}" ]]; then
   printf '  FAIL  %-18s %s is absent — run scripts/build-keyring.sh\n' "keyring file" "${KEYRING}"
   fail=1
 else
-  kr_fprs="$(gpg --show-keys --with-colons "${KEYRING}" 2>/dev/null \
-             | awk -F: '/^fpr:/ && !seen[$10]++ {print $10}' | sort -u)"
   allow_fprs="$(awk '{sub(/#.*/,""); gsub(/[[:space:]]/,""); if (length) print toupper($0)}' \
                 keys/trusted-fingerprints.txt | sort -u)"
-  # The keyring carries subkey fingerprints too; only primaries must correspond.
-  extra="$(comm -23 <(echo "${allow_fprs}") <(echo "${kr_fprs}"))"
-  if [[ -n "${extra}" ]]; then
+  # Checked BOTH ways. Verifying only that every allowlisted key is present
+  # leaves the keyring free to carry extras — which do not currently count,
+  # because verification intersects with the textual allowlist, but an
+  # unexplained key in the artifact the container build trusts is an
+  # auditability hole even when it is inert. An external review flagged this as
+  # one-way; it is not any more.
+  #
+  # The keyring legitimately contains SUBKEY fingerprints as well as primaries,
+  # so "extra" means a PRIMARY key with no allowlist entry. Primaries are the
+  # fpr line immediately following a pub record.
+  kr_primaries="$(gpg --show-keys --with-colons "${KEYRING}" 2>/dev/null \
+                  | awk -F: '/^pub:/{want=1} /^fpr:/{if(want){print $10; want=0}}' | sort -u)"
+
+  missing="$(comm -23 <(echo "${allow_fprs}") <(echo "${kr_primaries}"))"
+  extra="$(comm -13 <(echo "${allow_fprs}") <(echo "${kr_primaries}"))"
+
+  if [[ -n "${missing//[[:space:]]/}" || -n "${extra//[[:space:]]/}" ]]; then
     while read -r f; do
-      [[ -n "$f" ]] && printf '  FAIL  %-18s %s allowlisted but not in the keyring\n' "keyring" "$f"
+      [[ -n "$f" ]] && printf '  FAIL  %-18s %s allowlisted but not in the keyring\n' "keyring sync" "$f"
+    done <<< "${missing}"
+    while read -r f; do
+      [[ -n "$f" ]] && printf '  FAIL  %-18s %s in the keyring but NOT allowlisted\n' "keyring sync" "$f"
     done <<< "${extra}"
     fail=1
   else
-    printf '  OK    %-18s every allowlisted key is in %s\n' "keyring sync" "${KEYRING##*/}"
+    printf '  OK    %-18s keyring primaries == allowlist, both ways\n' "keyring sync"
   fi
 fi
 
