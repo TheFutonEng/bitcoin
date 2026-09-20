@@ -79,7 +79,7 @@ RUN set -eux; \
     # signing SUBKEY when a builder signs with one, and the allowlist holds
     # PRIMARY fingerprints — matching $3 silently drops those (7 of 11 on 31.1).
     # The last field is the primary fpr. Keep this identical to verify.sh.
-    awk '/^\[GNUPG:\] VALIDSIG/ { print (NF >= 12 ? $NF : $3) }' /stage/gpg-status.txt \
+    awk '/^\[GNUPG:\] NEWSIG/ {bad=0} /^\[GNUPG:\] (EXPKEYSIG|REVKEYSIG)/ {bad=1} /^\[GNUPG:\] VALIDSIG/ {if(!bad) print (NF >= 12 ? $NF : $3)}' /stage/gpg-status.txt \
       | sort -u > /stage/signers.txt; \
     \
     # Intersect with the hand-reviewed allowlist. A key being importable is not

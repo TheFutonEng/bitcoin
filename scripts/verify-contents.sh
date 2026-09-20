@@ -108,9 +108,23 @@ inventory() {
     echo "docker create failed for ${image}" >&2; return 1; }
   cids+=("${cid}")
   mkdir -p "${dir}"
+  # `|| true` here used to swallow a failed export: an empty inventory compared
+  # against an empty base inventory yields zero unaccounted files and a cheerful
+  # "every file is accounted for". A verifier that reports success when it could
+  # not read the thing it is verifying is worse than no verifier. Check the
+  # EXPORT's status specifically — tar's warnings on odd entries are tolerable,
+  # a failed export is not.
+  local export_rc
+  set +e
   docker export "${cid}" | tar -x -C "${dir}" \
-    --no-same-owner --no-same-permissions --delay-directory-restore 2>/dev/null || true
+    --no-same-owner --no-same-permissions --delay-directory-restore 2>/dev/null
+  export_rc=${PIPESTATUS[0]}
+  set -e
   docker rm -f "${cid}" >/dev/null 2>&1 || true
+  if (( export_rc != 0 )); then
+    echo "docker export failed for ${image} (exit ${export_rc})" >&2
+    return 1
+  fi
 
   ( cd "${dir}"
     find . -type f -printf '%P\0' 2>/dev/null | sort -z | while IFS= read -r -d '' f; do
@@ -124,6 +138,15 @@ inventory() {
       { i=index($0,"  "); if (!(substr($0,i+2) in skip)) print }
     ' | sort -k2 > "${out}"
   rm -rf "${dir}"
+
+  # Second belt: a successful export can still be truncated. Every real rootfs
+  # has hundreds of entries, so a near-empty inventory means something broke
+  # upstream of the comparison — and comparing two broken inventories "passes".
+  local n; n=$(grep -c . "${out}" || true)
+  if (( n < 50 )); then
+    echo "inventory for ${image} has only ${n} entries — refusing to compare" >&2
+    return 1
+  fi
 }
 
 echo ">> inventorying image:  ${IMAGE}"
@@ -156,7 +179,10 @@ if [[ -n "${SHIP_BINARIES}" ]]; then
 fi
 sort -k2 -o "${tmp}/ours.txt" "${tmp}/ours.txt"
 
-printf '%s\n' ${GENERATED_PATHS} | sed '/^$/d' | sort > "${tmp}/generated.txt"
+# Quoted: the string is already newline-separated, so one printf argument
+# yields the same lines without depending on word-splitting — which would
+# mangle any future path containing a space or glob character.
+printf '%s\n' "${GENERATED_PATHS}" | sed '/^$/d' | sort > "${tmp}/generated.txt"
 
 # --- classify -------------------------------------------------------------
 awk -v ours="${tmp}/ours.txt" -v base="${tmp}/base.txt" -v gen="${tmp}/generated.txt" '

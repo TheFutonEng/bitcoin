@@ -51,7 +51,22 @@ gpg --batch --status-fd 1 --verify \
 # on 31.1 it counts 7 of 11. The last field is the primary key's fingerprint,
 # which is what the allowlist is expressed in. Deduping on the primary also
 # means one builder signing with two subkeys still counts once.
-signers="$(awk '/^\[GNUPG:\] VALIDSIG/ { print (NF >= 12 ? $NF : $3) }' "${status}" | sort -u)"
+# Signatures from EXPIRED or REVOKED keys do not count. gpg emits BOTH
+# EXPKEYSIG and VALIDSIG for an expired key — verified by construction
+# 2026-09-20 with a key given a 2-second lifetime — so a parser reading only
+# VALIDSIG counts them. `bad` is scoped by NEWSIG, which begins each signature
+# block, so the flag applies to that signature only.
+#
+# This is a policy choice, not just a bug fix: a signature made while a key was
+# valid is arguably still evidence. It is rejected anyway, because an expired or
+# revoked builder key is one whose owner may have stopped maintaining it, and
+# the threshold is meant to measure people who currently vouch for the bytes.
+# It costs nothing today: all 10 allowlisted signers of 31.1 are current.
+signers="$(awk '
+  /^\[GNUPG:\] NEWSIG/                { bad = 0 }
+  /^\[GNUPG:\] (EXPKEYSIG|REVKEYSIG)/ { bad = 1 }
+  /^\[GNUPG:\] VALIDSIG/ { if (!bad) print (NF >= 12 ? $NF : $3) }
+' "${status}" | sort -u)"
 
 # The hand-reviewed allowlist. Importable != trusted.
 allowed="$(awk '{sub(/#.*/,""); gsub(/[[:space:]]/,""); if (length) print toupper($0)}' "${KEYS}/trusted-fingerprints.txt" | sort -u)"
@@ -60,7 +75,8 @@ accepted="$(comm -12 <(echo "${signers}") <(echo "${allowed}"))"
 count="$(printf '%s\n' "${accepted}" | grep -c . || true)"
 
 echo "accepted signers (${count}, minimum ${MIN_GOOD_SIGS}):"
-printf '  %s\n' ${accepted:-"(none)"}
+if [[ -n "${accepted}" ]]; then printf '%s\n' "${accepted}" | sed 's/^/  /'
+else echo "  (none)"; fi
 
 unknown="$(comm -23 <(echo "${signers}") <(echo "${allowed}") | grep -c . || true)"
 if (( unknown > 0 )); then
@@ -92,7 +108,7 @@ cat > "${REPO_ROOT}/provenance.json" <<EOF
   "tarball": "${TARBALL}",
   "tarball_sha256": "${digest}",
   "signature_threshold": ${MIN_GOOD_SIGS},
-  "accepted_signers": [$(printf '%s\n' ${accepted} | sed 's/.*/"&"/' | paste -sd, -)],
+  "accepted_signers": [$(printf '%s\n' "${accepted}" | grep -v '^$' | sed 's/.*/"&"/' | paste -sd, -)],
   "verified_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF

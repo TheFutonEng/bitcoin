@@ -34,7 +34,15 @@ TARBALL="${REPO_ROOT}/upstream/bitcoin-${VERSION}-${TRIPLE}.tar.gz"
 [[ -f "${TARBALL}" ]] || { echo "missing ${TARBALL} — run scripts/fetch-release.sh first" >&2; exit 1; }
 
 tmp="$(mktemp -d)"
-cleanup() { rm -rf "${tmp}"; [[ -n "${cid:-}" ]] && docker rm -f "${cid}" >/dev/null 2>&1 || true; }
+# Written as if-then rather than `A && B || C`. The old form worked, but in that
+# idiom C also runs when A succeeds and B fails — a real bug pattern, and this
+# is a trap handler where a stray non-zero exit is easy to miss.
+cleanup() {
+  rm -rf "${tmp}"
+  if [[ -n "${cid:-}" ]]; then
+    docker rm -f "${cid}" >/dev/null 2>&1 || true
+  fi
+}
 trap cleanup EXIT
 
 echo ">> extracting reference binaries from verified tarball"

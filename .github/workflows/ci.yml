@@ -121,6 +121,31 @@ jobs:
       - name: make check-pins
         run: make check-pins
 
+      # Every verification gate in this repo is a shell script, so the scripts
+      # ARE the security boundary. shellcheck was never run against them until
+      # an external review asked for it and found four issues — three of them
+      # unquoted expansions in exactly the code that parses signature output.
+      - name: shellcheck
+        env:
+          # Pinned and hash-verified, like cosign and syft in release.yml. The
+          # first version of this step used `apt-get install shellcheck`, which
+          # gave the runner 0.9.0 while this was developed against 0.11.0 — and
+          # the two disagree: 0.9.0 flagged an SC2015 that 0.11.0 does not. A
+          # linter that gates the merge has to be a fixed version, or "clean"
+          # means different things in different places. Both versions pass now;
+          # bumping this is a reviewed commit.
+          SHELLCHECK_VERSION: v0.11.0
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+        run: |
+          set -euo pipefail
+          curl -sSfL -o /tmp/sc.tar.xz \
+            "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          echo "${SHELLCHECK_SHA256}  /tmp/sc.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/sc.tar.xz -C /tmp "shellcheck-${SHELLCHECK_VERSION}/shellcheck"
+          install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version | grep version:
+          shellcheck scripts/*.sh
+
   # The real chain. Downloads only the tarball; SHA256SUMS and its signature
   # come from git, so this proves the committed trust anchor admits the bytes
   # upstream is actually serving.
