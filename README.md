@@ -14,7 +14,7 @@ image**. It says nothing about how you deploy or operate a node.
 > using the commands in [Verifying what you pulled](#verifying-what-you-pulled).
 >
 > ```
-> ghcr.io/thefutoneng/bitcoin@sha256:35c21e6979a219ac7c292ea7442c8ee3dd4eaa9627fe4b9b8dc7b3e2fea9392e
+> ghcr.io/thefutoneng/bitcoin@sha256:b36d45e23e2dd5499660b2d3b184d28069c14577a2330334de6ad186d2459fd2
 > ```
 >
 > Pin that digest. The tag moves; the digest does not.

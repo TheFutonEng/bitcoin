@@ -333,11 +333,29 @@ real — what is left is getting the result published and signed.
       cosign v3 notes, both found by running it: `--tlog-upload=false` errors
       unless `--use-signing-config=false` is also passed, and predicate types are
       given with `--type`. Verified against v3.1.3.
-- [x] **First real publish — v31.1, 2026-09-19.**
+- [x] **First real publish — v31.1, 2026-09-19.** Published twice; the second
+      run is what `:31.1` points at.
 
       ```
-      ghcr.io/thefutoneng/bitcoin@sha256:35c21e6979a219ac7c292ea7442c8ee3dd4eaa9627fe4b9b8dc7b3e2fea9392e
+      ghcr.io/thefutoneng/bitcoin@sha256:b36d45e23e2dd5499660b2d3b184d28069c14577a2330334de6ad186d2459fd2
       ```
+
+      **Both signing modes verify** from a clean shell with no credentials —
+      signature plus provenance, SBOM and contents manifest, keyless *and*
+      against the committed `cosign.pub`. Eight checks. The key-pair path had
+      never worked before: the README documented a `cosign verify --key` command
+      with no key-pair signature behind it.
+
+      The first run (`sha256:35c21e69…`) published keyless-only, because the
+      signing secrets did not exist yet. Re-running required moving the tag: a
+      `workflow_dispatch` from `v31.1` would have executed the workflow file
+      **as it existed at that ref**, which still read the wrong secret name and
+      would have published keyless-only again, silently. Moving the tag to the
+      fixed `main` both corrected the ref and re-triggered `push: tags`.
+
+      The digest necessarily changed — `VCS_REF` and `BUILD_DATE` both derive
+      from the commit, and it was a different commit. That is not a
+      reproducibility failure; same commit still means same digest.
 
       That digest is the OCI **index** — image manifest plus attestation
       manifest — which is what consumers pin. The tag was signed
