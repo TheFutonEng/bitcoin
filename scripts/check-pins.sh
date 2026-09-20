@@ -40,16 +40,24 @@ mk_base="$(sed -n 's/^RUNTIME_BASE[[:space:]]*?=[[:space:]]*\(.*\)/\1/p' Makefil
 df_base="$(sed -n 's/^ARG RUNTIME_BASE=\(.*\)/\1/p' Dockerfile)"
 cmp_vals "RUNTIME_BASE" "${mk_base}" "${df_base}"
 
-# Invariant 4: that base must be a digest, not a tag — in BOTH files. Checking
-# only one of them reports OK while the other is still on a floating tag.
-inv4=1
-for pair in "Dockerfile:${df_base}" "Makefile:${mk_base}"; do
+# EVERY base must be a digest, not a tag. That means the runtime base in both
+# files AND the verifier base — the stage that actually checks the signatures,
+# and therefore the one where a swapped image buys an attacker the most. It sat
+# on a floating tag until 2026-09-20 because the invariant said "runtime base"
+# and nobody re-read it against the Dockerfile.
+df_verifier="$(sed -n 's/^ARG VERIFIER_BASE=\(.*\)/\1/p' Dockerfile)"
+pinned=1
+for pair in "runtime/Dockerfile:${df_base}" "runtime/Makefile:${mk_base}" \
+            "verifier/Dockerfile:${df_verifier}"; do
   where="${pair%%:*}"; val="${pair#*:}"
-  [[ "${val}" == *"@sha256:"* ]] || {
-    printf '  FAIL  %-18s %s has a tag, not a digest: %s\n' "invariant 4" "${where}" "${val}"
-    inv4=0; fail=1; }
+  if [[ -z "${val}" ]]; then
+    printf '  FAIL  %-18s could not read %s\n' "base pinning" "${where}"; pinned=0; fail=1
+  elif [[ "${val}" != *"@sha256:"* ]]; then
+    printf '  FAIL  %-18s %s is a tag, not a digest: %s\n' "base pinning" "${where}" "${val}"
+    pinned=0; fail=1
+  fi
 done
-(( inv4 )) && printf '  OK    %-18s pinned by digest in both files\n' "invariant 4"
+(( pinned )) && printf '  OK    %-18s runtime and verifier both pinned by digest\n' "base pinning"
 
 # Every allowlisted fingerprint needs its public key present, or gpg cannot
 # verify that builder's signature and the fingerprint sits in the allowlist

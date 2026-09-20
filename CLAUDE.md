@@ -151,7 +151,14 @@ already performs.
    parses at verification time. Adding a signer is one reviewed commit carrying
    both the `.asc` and the fingerprint; `check-pins.sh` fails if an allowlisted
    fingerprint has no key file, since that failure is otherwise silent.
-5. **The runtime base image is pinned by digest**, never by tag.
+5. **Every base image is pinned by digest**, never by tag — the runtime base
+   *and* the verifier base. The verifier stage is the one that actually checks
+   the signatures, so a swapped image there is worth more to an attacker than
+   one in the runtime: a `gpgv` emitting fabricated `VALIDSIG` lines defeats the
+   threshold, and the resulting image looks legitimate. It sat on
+   `debian:bookworm-slim` until 2026-09-20 because this invariant said "runtime
+   base" and nobody re-read it against the Dockerfile. `check-pins.sh` now
+   asserts all three references are digests.
 6. **Verification logic lives in two places** (`Dockerfile` and
    `scripts/verify.sh`) deliberately, so a standalone check and the image build
    agree. Change one, change the other. Task below to add a test that they
