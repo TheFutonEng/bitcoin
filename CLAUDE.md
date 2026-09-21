@@ -137,7 +137,16 @@ already performs.
    would add no integrity, only permanent history.
 3. **Threshold signature verification.** `SHA256SUMS` must carry at least
    `MIN_GOOD_SIGS` (**default 6**) valid signatures from keys on the allowlist
-   in `keys/trusted-fingerprints.txt`. This is the same *mechanism* upstream
+   in `keys/trusted-fingerprints.txt`.
+
+   **"Valid" is precise here, and the precision was earned the hard way.** It
+   means a `VALIDSIG` whose signature block carried no `EXPKEYSIG` or
+   `REVKEYSIG`, counted by **primary** fingerprint so one signer with several
+   subkeys counts once. Each half of that sentence was once wrong: the parsers
+   matched signing-subkey fingerprints against a primary-key allowlist and
+   silently dropped four good signatures, and they later counted expired ones.
+   If this wording ever drifts back to just "valid signatures", the next
+   implementer will reinvent one of those. This is the same *mechanism* upstream
    tooling uses, at the same threshold `bitcoin/bitcoin` uses; it is table
    stakes, not a differentiator. The default lives in three places — Makefile,
    Dockerfile `ARG`, and `scripts/verify.sh` — change all three together. Do not
@@ -146,7 +155,10 @@ already performs.
    Presence in `keys/` gets a key imported; presence in
    `trusted-fingerprints.txt` is what makes its signature count. The check stays
    because it is what stops a stray key file from mattering — but we do not rely
-   on it as a filter. `keys/` holds **only** the allowlisted keys, because a
+   on it as a filter. `check-pins.sh` compares the keyring and the allowlist in
+   **both** directions: a key in the keyring with no allowlist entry is inert,
+   but an unexplained key inside the artifact the container build trusts is an
+   auditability hole regardless. `keys/` holds **only** the allowlisted keys, because a
    non-allowlisted key cannot change the outcome and is just another blob gpg
    parses at verification time. Adding a signer is one reviewed commit carrying
    both the `.asc` and the fingerprint; `check-pins.sh` fails if an allowlisted
@@ -161,8 +173,15 @@ already performs.
    asserts all three references are digests.
 6. **Verification logic lives in two places** (`Dockerfile` and
    `scripts/verify.sh`) deliberately, so a standalone check and the image build
-   agree. Change one, change the other. Task below to add a test that they
-   match. Both are run by CI on every pull request.
+   agree. Change one, change the other. Both are run by CI on every PR.
+
+   **Do not call these two implementations "independent".** They are the same
+   hand-written parser duplicated, so they share their bugs — demonstrated
+   twice: the `$3`-versus-primary-fingerprint bug was present in both, and so
+   was counting expired signatures. Duplication buys defence against one
+   *copy* being edited, not against the logic being wrong. The only real
+   independence in this repo is `make cross-check`, which runs Core's own
+   `verify.py` against the same artifacts and compares verdicts.
 
 ## Layout
 
@@ -232,9 +251,45 @@ doing something clever, this catches it.
 - Ports: 8332 RPC, 8333 P2P, 28332/28333 ZMQ.
 - Ships `bitcoind` and `bitcoin-cli` only.
 - Provenance breadcrumbs at `/usr/local/share/bitcoind-provenance/`, plus a
-  cosign attestation.
+  cosign attestation. **These two files are trusted by path, not by hash** —
+  their content is build-specific, so `verify-contents.sh` does not check it.
+  Replacing them would not fail verification. They are breadcrumbs, not
+  evidence; the attestations are the evidence.
 
 ## Open work
+
+### External security review, 2026-09-20
+
+An independent agent reviewed this repository against the claims below. It is
+worth reading its conclusions as a corrective to this file's tone: two of its
+findings were high-severity and both were real.
+
+**`verify-contents.sh` failed open.** The `docker export` pipeline ended in
+`|| true`, so an export failure produced an empty inventory, compared cleanly
+against an empty base inventory, and reported "every file is accounted for"
+with exit 0. The script carrying this repo's most distinctive claim would
+have passed while unable to read the thing it was verifying.
+
+**Expired signatures counted toward the threshold** — see the closed item
+below.
+
+Both fixed, each reproduced first. Also fixed: the keyring was verified one way
+only, a release could publish keyless-only, the guix.sigs fallback took a
+majority vote when builders disagreed, and shellcheck had never been run.
+
+The review's most useful work was arguably not the code findings but the
+documentation ones, and they are the reason for the corrections in the
+invariants above: **"two independent implementations" was misleading**, and
+**"every file is accounted for" overstated what the path exclusions allow**. In
+a repo whose entire purpose is to be believed, a doc that overstates a
+guarantee is a real defect, not a cosmetic one.
+
+What it got slightly wrong, for the record: it described the keyless-only
+downgrade as "silent" when a warning already existed, and it measured the
+expired-key exposure against the 38-key bootstrap keyring rather than the
+10-key allowlist that actually gates, where the exposure was zero. Neither
+changes the finding; both are worth noting because precision about impact is
+what separates a useful review from an alarming one.
 
 ### Done since the initial commit
 
@@ -539,20 +594,24 @@ real — what is left is getting the result published and signed.
       across two — and is tested against injected drift in both. What remains is
       the *logic*: feed both a deliberately under-signed `SHA256SUMS` and assert
       both fail. Equal thresholds do not prove equal parsing.
-- [ ] **Does an expired or revoked key's signature count toward our
-      threshold?** Open question, not a known bug — do not assume either answer.
-      What is known: verifying 31.1 emitted **4 `KEYEXPIRED` status lines**
-      alongside 11 `VALIDSIG`, and Core's `verify.py` deliberately folds
-      `EXPKEYSIG` and `REVKEYSIG` into its good tally (lines 185-193), so its 11
-      and our 11 may agree for different reasons. What is NOT known: whether gpg
-      emits `VALIDSIG` for a signature from an expired or revoked key, and so
-      whether any of our 11 came from one. Those `KEYEXPIRED` lines may refer to
-      unrelated keys in the keyring or to expired subkeys, and nothing has been
-      traced. Determine it by construction: make a throwaway key, sign a file,
-      expire the key, and see what `--status-fd` prints. Then decide policy — a
-      revoked builder key almost certainly should not count, and if `VALIDSIG`
-      alone cannot distinguish it, the parser needs `EXPKEYSIG`/`REVKEYSIG`
-      handling in both places.
+- [x] **Answered 2026-09-20: expired and revoked signatures no longer count.**
+      The question was whether gpg emits `VALIDSIG` for a signature from an
+      expired key. It does — **both** `EXPKEYSIG` and `VALIDSIG`, verified by
+      construction with a key given a 2-second lifetime — so a parser reading
+      only `VALIDSIG` counted them. Both parsers now scope a flag by `NEWSIG`,
+      which begins each signature block, and skip that signature.
+
+      Treated as policy, not just a fix. A signature made while a key was valid
+      is arguably still evidence; it is rejected anyway, because the threshold
+      is meant to count people who *currently* vouch for the bytes. It costs
+      nothing today — all 10 allowlisted signers of 31.1 are current, and the
+      accepted count is 10 either way.
+
+      Note for anyone re-measuring this: the "4 `KEYEXPIRED` lines" recorded
+      here earlier came from the 38-key bootstrap keyring, not the pruned
+      10-key allowlist. Against the allowlist there are none. Measure against
+      what actually gates, not against what happens to be imported.
+
 - [ ] **Annotate duplicate keys in `import-builder-keys.sh`.** Its `OWNER` map
       is keyed by fingerprint, so when two builder-key files carry the same
       primary key the second silently overwrites the first's name. guix.sigs has
@@ -561,10 +620,20 @@ real — what is left is getting the result published and signed.
       less recognisable of the two names, which is the opposite of helpful when
       the whole point of that comment is human recognition. Make it collect all
       names per fingerprint and emit `# TheCharlatan / sedited`.
-- [ ] **Negative tests generally.** Tampered tarball, sig from an off-allowlist
-      key, threshold of 5 when 6 is required, a binary swapped inside a test
-      image so `verify-image.sh` is proven to catch it. A verification gate with
-      no test proving it fails closed is decoration.
+- [ ] **Negative tests generally.** Still no runnable suite, but the external
+      review and the fixes for it added several reproductions worth codifying
+      rather than losing: a `docker` shim whose `export` fails (proves
+      `verify-contents.sh` no longer passes on an unreadable image), a key with
+      a 2-second lifetime (proves expired signatures are rejected), a generated
+      key planted in the keyring (proves `check-pins.sh` catches extras), a
+      tampered image pushed to the same tag (proves signature verification is
+      bound to the digest), and verification with the wrong public key.
+
+      Still missing, and the most valuable one: feed both the `Dockerfile` and
+      `scripts/verify.sh` a deliberately under-signed `SHA256SUMS` and assert
+      both reject it. Equal thresholds do not prove equal parsing — and since
+      those two parsers are duplicated rather than independent, they have now
+      shared a bug twice.
 - [x] **CI.** `.github/workflows/ci.yml`, added 2026-09-14. Two jobs:
       `checks` runs `make check-pins` for fast drift feedback, and
       `verify-and-build` runs the whole chain — `verify`, `cross-check`,
