@@ -70,7 +70,9 @@ was already fine.
    committing ~86 MB per release per architecture would add no integrity.
 3. **Threshold signature verification.** `SHA256SUMS` must carry at least
    `MIN_GOOD_SIGS` (default 6) valid signatures from keys on the allowlist in
-   `keys/trusted-fingerprints.txt`.
+   `keys/trusted-fingerprints.txt`. "Valid" excludes signatures from expired or
+   revoked keys, and counts by primary fingerprint, so one signer with several
+   subkeys counts once.
 4. **Importable is not trusted.** Presence in `keys/` gets a key imported;
    presence in `trusted-fingerprints.txt` is what makes its signature count.
 5. **Every base image is pinned by digest**, never by tag — both the runtime
@@ -192,6 +194,12 @@ cosign verify \
 The identity is not optional. Without it you would accept a signature from
 anyone Sigstore will issue a certificate to, which is no check at all.
 
+Note the regexp is anchored at the start but **not** at the end: it accepts any
+tag produced by this workflow, in this repository. That is deliberate — every
+release should verify with the same published command — but it does mean the
+signature attests to "a release of this repo", not "this specific version".
+Pin the digest if you care which one you have.
+
 A key-pair signature is also published for offline verification, where Sigstore
 is unreachable. It deliberately carries no transparency-log entry, so add
 `--insecure-ignore-tlog`; that warning is about the absence of a log, not about
@@ -217,8 +225,15 @@ cosign verify-attestation \
 
 `"unaccounted": 0` and `complete: true` mean every file in the image was
 matched to either the digest-pinned base or the signature-verified release
-tarball. Five paths Docker injects into a container at runtime are excluded by
-design — see `DOCKER_RUNTIME_PATHS` in `scripts/verify-contents.sh`.
+tarball — **with two documented exceptions, so read "every file" precisely.**
+
+Five paths Docker injects into a container at runtime are excluded outright
+(`DOCKER_RUNTIME_PATHS` in `scripts/verify-contents.sh`); they are not in the
+image, and Docker overrides them at runtime, so content planted there is inert.
+Two provenance breadcrumbs under `/usr/local/share/bitcoind-provenance/` are
+matched by path rather than by hash, because their content is build-specific —
+they could be replaced without failing verification. Everything else, including
+both shipped binaries, is checked by content.
 
 Swap `--type` for `spdxjson` or the `bitcoind-provenance/v1` type to check the
 other two. `make verify-sig` runs all four checks at once if you would rather
@@ -255,19 +270,24 @@ sums.
 
 ## Known gaps
 
-- **Only keyless-signed so far.** The offline-verifiable key-pair signature is
-  not attached yet, so the `cosign verify --key` path below does not work until
-  `cosign.pub` appears in this repo. Signatures are additive, so it can be added
-  to the already-published digest without republishing.
 - **No formal negative-test suite.** Individual gates have been proven to fail
   closed — a planted file, a tampered keyring, injected pin drift, an unwritable
-  datadir — but those proofs are ad hoc rather than a runnable suite.
+  datadir, an unreadable image, an expired signing key, a swapped image at the
+  same tag — but those proofs are ad hoc rather than a runnable suite. The most
+  valuable one is still missing: feed both the Dockerfile and `verify.sh` a
+  deliberately under-signed `SHA256SUMS` and assert both reject it.
 - **arm64 is untested.** The pinned base is already a multi-arch index, so the
   base is not the blocker.
-- **`DOCKER_RUNTIME_PATHS` is a deliberate hole.** Five paths Docker injects
-  into a container are excluded from the contents manifest. Content planted
-  there is inert because Docker overrides all five at runtime, but they are not
-  checked.
+- **Two deliberate holes in the contents manifest.** Five paths Docker injects
+  into a container (`DOCKER_RUNTIME_PATHS`) are excluded outright; content
+  planted there is inert because Docker overrides all five at runtime, but it is
+  not checked. And two provenance breadcrumbs are matched by path rather than by
+  hash, because their content is build-specific — they could be replaced without
+  failing verification.
+- **The two verification implementations are not independent.** The `Dockerfile`
+  and `scripts/verify.sh` carry the same hand-written parser, so they share
+  their bugs, and have done twice. `make cross-check`, which runs Bitcoin Core's
+  own `verify.py` against the same artifacts, is the only real second opinion.
 
 ## License
 
