@@ -57,7 +57,7 @@ BUILD_DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>
 
 export SOURCE_DATE_EPOCH
 
-.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig clean
+.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold clean
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s$$'\t'
@@ -176,6 +176,17 @@ verify-image: ## Prove the image's binaries are the verified upstream bytes (wor
 
 verify-contents: ## Prove EVERY file in the image is accounted for, not just the binaries
 	scripts/verify-contents.sh $(IMAGE):$(TAG) $(VERSION) $(TRIPLE)
+
+# The only test in the repo that can fail for a security reason rather than an
+# operational one. It needs docker and the tarball, so it sits with the rest of
+# the chain rather than with check-pins.
+#
+# `test` is the aggregate: as the negative-test suite grows, add targets here and
+# CI picks them up without another workflow edit.
+test: test-threshold ## Run every test
+
+test-threshold: ## Prove BOTH threshold implementations agree and fail closed
+	tests/test-threshold.sh $(VERSION) $(TRIPLE)
 
 # bitcoin/bitcoin unpacks the release tarball into /opt and puts it on PATH,
 # rather than installing into /usr/local/bin as we do. Verified against
