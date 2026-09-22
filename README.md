@@ -270,12 +270,12 @@ sums.
 
 ## Known gaps
 
-- **No formal negative-test suite.** Individual gates have been proven to fail
-  closed — a planted file, a tampered keyring, injected pin drift, an unwritable
-  datadir, an unreadable image, an expired signing key, a swapped image at the
-  same tag — but those proofs are ad hoc rather than a runnable suite. The most
-  valuable one is still missing: feed both the Dockerfile and `verify.sh` a
-  deliberately under-signed `SHA256SUMS` and assert both reject it.
+- **Negative tests cover the signature threshold only.** `make test` runs 35
+  assertions proving both threshold implementations agree and fail closed, on
+  every pull request. The other gates — a planted file in the image, a tampered
+  keyring, injected pin drift, an unwritable datadir, an unreadable image, a
+  swapped image at the same tag — have each been shown to fail closed by hand,
+  but those proofs are ad hoc rather than runnable, so nothing re-checks them.
 - **arm64 is untested.** The pinned base is already a multi-arch index, so the
   base is not the blocker.
 - **Two deliberate holes in the contents manifest.** Five paths Docker injects
@@ -288,6 +288,8 @@ sums.
   and `scripts/verify.sh` carry the same hand-written parser, so they share
   their bugs, and have done twice. `make cross-check`, which runs Bitcoin Core's
   own `verify.py` against the same artifacts, is the only real second opinion.
+  `make test` now at least proves the two copies behave identically on inputs
+  designed to separate them, which is a narrower claim than independence.
 
 ## License
 

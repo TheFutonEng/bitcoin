@@ -183,6 +183,11 @@ already performs.
    independence in this repo is `make cross-check`, which runs Core's own
    `verify.py` against the same artifacts and compares verdicts.
 
+   `tests/test-threshold.sh` (via `make test`) is what keeps the two copies
+   honest in the meantime: it feeds both the *same* fixtures and asserts they
+   report the *same count*, so a change to one that the other does not get
+   fails CI rather than waiting for a release to expose it.
+
 ## Layout
 
 ```
@@ -201,6 +206,7 @@ scripts/verify-signatures.sh     prove the signature AND all three attestations 
 scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs
 scripts/fetch-sums-from-guix-sigs.sh  recover signed sums when upstream withdraws a release (read its header)
 scripts/cross-check-verify-py.sh second opinion on the threshold from Core's own verify.py
+tests/test-threshold.sh          negative tests: both threshold gates, same fixtures, must agree
 keys/                            armored pubkeys for the allowlisted builders ONLY,
                                  trusted-fingerprints.txt, and trusted-keyring.gpg
                                  (derived; what the container build verifies against)
@@ -290,6 +296,52 @@ expired-key exposure against the 38-key bootstrap keyring rather than the
 10-key allowlist that actually gates, where the exposure was zero. Neither
 changes the finding; both are worth noting because precision about impact is
 what separates a useful review from an alarming one.
+
+### Mutation testing, 2026-09-21 — how the threshold suite was validated
+
+A passing test proves nothing until it has been shown it can fail. After
+`tests/test-threshold.sh` went green, every gate it covers was deliberately
+broken, one mutation at a time, in a throwaway `git archive` of HEAD, and the
+suite was re-run against each. **13 mutants, 13 caught** — `$3` instead of the
+primary fingerprint, dropped `sort -u`, threshold weakened to 1, dropped
+`EXPKEYSIG` handling, dropped allowlist intersection, dropped `NEWSIG` scoping,
+each in both the Dockerfile and verify.sh.
+
+That number is the point, but the process is the value: **the first version of
+the suite was green and caught only 9 of 13.** Three things it could not see,
+all found by mutation and none by reading it:
+
+1. **Dropping the allowlist intersection changed nothing.** `keys/` holds
+   exactly the allowlisted keys, so the signer set and the allowlist are always
+   identical on real data and `comm -12` is a no-op. Invariant 4 — "importable
+   is not trusted" — was completely untested, and could have been deleted from
+   both gates silently. Fixed by minting a key that is in the keyring and not on
+   the allowlist, which is a state the repo otherwise refuses to be in.
+
+2. **Dropping `EXPKEYSIG` handling changed nothing**, because every allowlisted
+   signer of 31.1 is current. The fix for the review's second HIGH finding had
+   no test that could fail. Fixed by minting a key and letting it expire.
+
+3. **Dropping the `NEWSIG` reset changed nothing** — and this one is the
+   sharpest. Without it the `bad` flag latches on the first `EXPKEYSIG` and
+   every *subsequent* signature is discarded too. The fixture put the expired
+   packet last, so nothing followed it and the bug was invisible. **An ordering
+   assumption in the fixture, not in the code.** Fixed by a second fixture with
+   the expired signature first and a full quorum after it, asserted to be
+   ACCEPTED. That case is also the realistic one: the day a Core builder's key
+   lapses, upstream ships exactly that bundle, and a latched flag would reject a
+   release ten current builders signed.
+
+A fourth problem surfaced from running the suite twice rather than once:
+buildkit caches successful steps and not failing ones, so on the second run the
+accept case came back `CACHED` with no output to parse. The asymmetry points
+exactly the wrong way — the one case that must keep passing is the one whose
+result gets reused, and CI warms that cache with `make build` earlier in the
+same job. `--no-cache` on the test's build is load-bearing.
+
+**Do this for every gate before believing its test.** Reading a test tells you
+what it intends to check. Breaking the code tells you what it actually checks,
+and on this evidence the two differ about a third of the time.
 
 ### Done since the initial commit
 
@@ -588,12 +640,40 @@ real — what is left is getting the result published and signed.
 - [ ] **STIG/hardening pass.** Distroless gets most of this for free, but the
       scanner wants explicit evidence. This is why the repo exists — do not let
       it slip behind the plumbing tasks.
-- [ ] **Test that Dockerfile and verify.sh agree.** Partially covered as of
-      2026-09-12: `scripts/check-pins.sh` (wired into `make verify`) asserts the
-      *values* agree — `MIN_GOOD_SIGS` across all three files, `RUNTIME_BASE`
-      across two — and is tested against injected drift in both. What remains is
-      the *logic*: feed both a deliberately under-signed `SHA256SUMS` and assert
-      both fail. Equal thresholds do not prove equal parsing.
+- [x] **Test that Dockerfile and verify.sh agree — done 2026-09-21.**
+      `check-pins.sh` had covered the *values* since 2026-09-12; `make test`
+      now covers the *logic*. `tests/test-threshold.sh` splits the real
+      committed `SHA256SUMS.asc` into its 11 individual signature packets with
+      `gpgsplit`, reassembles them into fixtures with a known number of
+      acceptable signers, and feeds each fixture to **both** gates — the real
+      `scripts/verify.sh` and the real `Dockerfile` verifier stage, built with
+      `--target verifier`. 35 assertions, ~14s, wired into CI.
+
+      The headline assertion is not "both rejected" but **"both reported the
+      same count"**. A verdict is one bit and hides disagreement; the count is
+      what separates two parsers.
+
+      Seven fixtures, and note what each is for. `at-threshold` (accept) exists
+      because a suite of rejection tests passes against a parser that rejects
+      everything. `under-threshold` is the named ask. `duplicate-signer` repeats
+      one signer to hold `sort -u` in place — gpgv really does emit a VALIDSIG
+      per copy. `unknown-padding` adds a packet from a key absent from the
+      keyring. `untrusted-in-keyring` and the two expired cases each need a
+      throwaway key, below.
+
+      **Two cases mint an ephemeral key in a temp GNUPGHOME, and they have to.**
+      `keys/` holds exactly the allowlisted keys (invariant 4), so on real data
+      the signer set and the allowlist are identical and the intersection is a
+      no-op — `comm -12` could be deleted from both gates and nothing would
+      notice. `untrusted-in-keyring` puts a genuine, verifiable, *non*-allowlisted
+      key in the keyring, which is the only way to actually exercise "importable
+      is not trusted". Likewise all 10 allowlisted signers of 31.1 are current,
+      so the `EXPKEYSIG` handling has nothing to act on until a key is made to
+      expire. The key material is ephemeral and never leaves the temp directory.
+
+      The test never mutates `upstream/`: it copies into a throwaway repo root
+      and a throwaway build context. A crash mid-run must not be able to leave
+      the real trust anchor replaced by a five-signature fixture.
 - [x] **Answered 2026-09-20: expired and revoked signatures no longer count.**
       The question was whether gpg emits `VALIDSIG` for a signature from an
       expired key. It does — **both** `EXPKEYSIG` and `VALIDSIG`, verified by
@@ -620,20 +700,23 @@ real — what is left is getting the result published and signed.
       less recognisable of the two names, which is the opposite of helpful when
       the whole point of that comment is human recognition. Make it collect all
       names per fingerprint and emit `# TheCharlatan / sedited`.
-- [ ] **Negative tests generally.** Still no runnable suite, but the external
-      review and the fixes for it added several reproductions worth codifying
-      rather than losing: a `docker` shim whose `export` fails (proves
-      `verify-contents.sh` no longer passes on an unreadable image), a key with
-      a 2-second lifetime (proves expired signatures are rejected), a generated
-      key planted in the keyring (proves `check-pins.sh` catches extras), a
-      tampered image pushed to the same tag (proves signature verification is
-      bound to the digest), and verification with the wrong public key.
+- [ ] **Negative tests for the remaining gates.** The threshold is now covered
+      by `make test` (above). The rest are not, and each has a reproduction that
+      was demonstrated once by hand and then lost: a `docker` shim whose
+      `export` fails (proves `verify-contents.sh` no longer passes on an
+      unreadable image), a generated key planted in the keyring (proves
+      `check-pins.sh` catches extras), a tampered image pushed to the same tag
+      (proves signature verification binds to the digest), verification with the
+      wrong public key, a planted file in the image, and injected pin drift.
 
-      Still missing, and the most valuable one: feed both the `Dockerfile` and
-      `scripts/verify.sh` a deliberately under-signed `SHA256SUMS` and assert
-      both reject it. Equal thresholds do not prove equal parsing — and since
-      those two parsers are duplicated rather than independent, they have now
-      shared a bug twice.
+      `tests/` and the `test` target already exist, so adding one is a file plus
+      a prerequisite. The pattern to copy from `test-threshold.sh`: build the
+      fixture from real artifacts, run the **real** gate, and assert on the
+      reason for the failure rather than on the exit code.
+
+- [ ] **Mutation-test the other gates the way the threshold was.** See the
+      mutation-testing section above — the technique found two blind spots that
+      review did not.
 - [x] **CI.** `.github/workflows/ci.yml`, added 2026-09-14. Two jobs:
       `checks` runs `make check-pins` for fast drift feedback, and
       `verify-and-build` runs the whole chain — `verify`, `cross-check`,

@@ -144,7 +144,7 @@ jobs:
           tar -xJf /tmp/sc.tar.xz -C /tmp "shellcheck-${SHELLCHECK_VERSION}/shellcheck"
           install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
           shellcheck --version | grep version:
-          shellcheck scripts/*.sh
+          shellcheck scripts/*.sh tests/*.sh
 
   # The real chain. Downloads only the tarball; SHA256SUMS and its signature
   # come from git, so this proves the committed trust anchor admits the bytes
@@ -216,6 +216,15 @@ jobs:
       - name: make verify-contents
         if: env.CODE == 'true'
         run: make verify-contents
+
+      # The negative tests. Everything above proves the chain works on GOOD
+      # inputs; this is the only step that proves it REJECTS bad ones. It runs
+      # last because it needs the same tarball and a warm base-image cache, and
+      # it mints a throwaway signing key in a temp GNUPGHOME — ephemeral, never
+      # written outside the runner, and unrelated to any release key.
+      - name: make test
+        if: env.CODE == 'true'
+        run: make test
 
       # `make verify-upstream` is deliberately NOT here. It is a valuable check
       # — it is what proves both images contain identical bytes — but it depends
