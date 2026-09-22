@@ -217,6 +217,19 @@ jobs:
         if: env.CODE == 'true'
         run: make verify-contents
 
+      # Reproducibility. This is the only step whose expected value was
+      # produced on a DIFFERENT machine — reproducible-digest.txt is committed
+      # from a dev box, and this asserts a GitHub runner builds the same bytes.
+      # That cross-environment comparison is the whole claim; running it twice
+      # on one machine would only prove the build is not random.
+      #
+      # It fails when the Dockerfile, the vendored release, the allowlist or the
+      # pinned base image changes — all of which SHOULD change the digest, and
+      # all of which are reviewed commits that run `make repro-digest-write`.
+      - name: make verify-repro
+        if: env.CODE == 'true'
+        run: make verify-repro
+
       # The negative tests. Everything above proves the chain works on GOOD
       # inputs; this is the only step that proves it REJECTS bad ones. It runs
       # last because it needs the same tarball and a warm base-image cache, and

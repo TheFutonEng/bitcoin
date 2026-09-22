@@ -191,6 +191,18 @@ jobs:
           make verify-image    VERSION=${{ steps.v.outputs.version }}
           make verify-contents VERSION=${{ steps.v.outputs.version }}
 
+      # Prove the published image is bit-for-bit what this tag builds. The step
+      # above proves the registry holds the right BINARIES and nothing else;
+      # this proves the whole image is byte-identical to an independent build of
+      # the same commit, which is the claim an outsider can repeat.
+      #
+      # It checks the IMAGE MANIFEST inside the index, not the index digest.
+      # The index also wraps the attestations, and those carry per-build
+      # timestamps and random ids, so the index digest differs on every build by
+      # design and always will. Do not "fix" this to compare index digests.
+      - name: Prove the published image is reproducible
+        run: make verify-repro-published VERSION=${{ steps.v.outputs.version }}
+
       # The SBOM is generated from the PUSHED image, so it describes exactly what
       # consumers will pull.
       - name: Generate SBOM
@@ -242,11 +254,24 @@ jobs:
         run: |
           set -euo pipefail
           ref="$(make -s digest-ref VERSION=${{ steps.v.outputs.version }})"
-          echo "### Published" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "${ref}" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # The reproducible half of the claim. Publishing this is what lets
+          # somebody else check it: check out the tag, run
+          # `make verify-repro-published`, and they either get the same image
+          # manifest digest or they have found something worth telling us about.
+          img="$(make -s repro-digest VERSION=${{ steps.v.outputs.version }} | sed -n 's/^image manifest digest: //p')"
+          {
+            echo "### Published"
+            echo '```'
+            echo "${ref}"
+            echo '```'
+            echo "Reproducible image manifest (rebuild this tag and compare):"
+            echo '```'
+            echo "${img}"
+            echo '```'
+            echo "\`git checkout ${{ github.ref_name }} && make fetch-tarball && make verify-repro-published\`"
+          } >> "$GITHUB_STEP_SUMMARY"
           echo "published ${ref}"
+          echo "reproducible image manifest ${img}"
 
       - name: Upload attestation inputs
         if: always()

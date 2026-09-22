@@ -57,7 +57,7 @@ BUILD_DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>
 
 export SOURCE_DATE_EPOCH
 
-.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold clean
+.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold repro-digest repro-digest-write verify-repro verify-repro-published clean
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s$$'\t'
@@ -118,6 +118,19 @@ build: verify ## Build the image (hermetic — no network in the build)
 # Not a dependency of `build`, and `build` is not a dependency of this: it would
 # silently build twice. Run the verification chain first —
 #   make build smoke verify-image verify-contents push
+#
+# `--push` is spelled out as `--output type=image,push=true` so the two
+# reproducibility options can ride along:
+#
+#   rewrite-timestamp=true  rewrites layer file mtimes to SOURCE_DATE_EPOCH.
+#     Without it every file we add carries the wall-clock time of the build and
+#     the published image differs on every rebuild of the same commit. This is
+#     what makes `make verify-repro-published` able to pass at all.
+#   unpack=false            the containerd image store turns unpack on by
+#     default and buildkit refuses rewrite-timestamp alongside it. Runners using
+#     the classic store never unpack here, so the flag is a no-op there and the
+#     two environments stop differing — the failure mode that has bitten this
+#     repo's build tooling twice.
 push: ## Build and push with full provenance + SBOM attestations
 	@echo "pushing $(IMAGE):$(TAG)"
 	docker buildx build \
@@ -132,7 +145,7 @@ push: ## Build and push with full provenance + SBOM attestations
 	  --build-arg BUILD_DATE=$(BUILD_DATE) \
 	  --provenance=mode=max --sbom=true \
 	  -t $(IMAGE):$(TAG) \
-	  --push .
+	  --output type=image,push=true,rewrite-timestamp=true,unpack=false .
 
 smoke: ## Prove the runtime base can actually run the binaries
 	@echo "--- bitcoind -version ---"
@@ -176,6 +189,22 @@ verify-image: ## Prove the image's binaries are the verified upstream bytes (wor
 
 verify-contents: ## Prove EVERY file in the image is accounted for, not just the binaries
 	scripts/verify-contents.sh $(IMAGE):$(TAG) $(VERSION) $(TRIPLE)
+
+# Reproducibility. Note carefully what is and is not claimed: the IMAGE MANIFEST
+# is reproducible, the published OCI INDEX is not, because the attestations it
+# wraps carry per-build timestamps and random ids. Read the header of
+# scripts/verify-reproducible.sh before repeating either claim.
+repro-digest: ## Print the image manifest digest THIS commit builds
+	scripts/verify-reproducible.sh --release
+
+repro-digest-write: ## Update reproducible-digest.txt (a reviewed commit)
+	scripts/verify-reproducible.sh --write
+
+verify-repro: ## Assert this tree still builds the committed canonical digest
+	scripts/verify-reproducible.sh
+
+verify-repro-published: ## Prove a PUBLISHED image is bit-for-bit this commit
+	scripts/verify-reproducible.sh --against $(IMAGE):$(TAG)
 
 # The only test in the repo that can fail for a security reason rather than an
 # operational one. It needs docker and the tarball, so it sits with the rest of

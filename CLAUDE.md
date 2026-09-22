@@ -206,7 +206,9 @@ scripts/verify-signatures.sh     prove the signature AND all three attestations 
 scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs
 scripts/fetch-sums-from-guix-sigs.sh  recover signed sums when upstream withdraws a release (read its header)
 scripts/cross-check-verify-py.sh second opinion on the threshold from Core's own verify.py
+scripts/verify-reproducible.sh   prove this commit builds the same image bytes anywhere
 tests/test-threshold.sh          negative tests: both threshold gates, same fixtures, must agree
+reproducible-digest.txt          the canonical image manifest digest CI checks every PR against
 keys/                            armored pubkeys for the allowlisted builders ONLY,
                                  trusted-fingerprints.txt, and trusted-keyring.gpg
                                  (derived; what the container build verifies against)
@@ -579,23 +581,75 @@ real — what is left is getting the result published and signed.
       the attestation steps twice — and anything the Makefile computes from the
       local git checkout.
 
-- [ ] **Reproducible rebuild agreement.** The strongest attestation claim
-      available to this repo, and one `bitcoin/bitcoin` does not make: two people
-      building the same commit independently get the same image digest. The
-      pieces are already in place — `--network=none`, staged inputs,
-      `SOURCE_DATE_EPOCH` pinned to the commit. What is untested is whether the
-      digest actually lands identical; layer timestamps are the usual culprit.
-      One such difference is already fixed: `SOURCE_REPO` came from
-      `git remote get-url origin`, which is the SSH form on a dev box and https
-      under `actions/checkout`. That put two different values in
-      `org.opencontainers.image.source` for the same commit, and therefore two
-      different digests. It is now normalised to https. Expect more of these —
-      anything derived from the local environment rather than from the commit is
-      a candidate.
+      **Largely answered 2026-09-22 by `make verify-repro`, which turns "should
+      be deterministic" into a gate.** Anything environment-dependent that
+      reaches the image now changes the digest and fails CI. What that check does
+      *not* cover, and what keeps this item open: it pins `PLATFORM` to
+      linux/amd64, so arm64 is unmeasured, and it deliberately fixes `VCS_REF`,
+      `BUILD_DATE` and `SOURCE_REPO` to placeholders rather than exercising the
+      real ones. Those three are the inputs that were actually buggy before, so
+      the gate covers everything except the category with the known history.
+      Reading them from the commit is what makes them safe; a regression there
+      would show up as `verify-repro-published` failing at release time rather
+      than on the PR.
 
-      Try `--output type=image,rewrite-timestamp=true`, then have a second
-      machine build the same commit and diff the digests. If it holds, publish
-      the expected digest per tag and it becomes a claim anyone can check.
+- [x] **Reproducible rebuild agreement — done 2026-09-22.** Two people building
+      the same commit get the same image. `scripts/verify-reproducible.sh`,
+      `make verify-repro`, and `reproducible-digest.txt` committed and checked by
+      CI on every pull request.
+
+      **Layer timestamps were the whole problem, exactly as suspected.** Two
+      builds of the same commit minutes apart differed, and the only difference
+      anywhere in the layers was file mtimes: the binaries carried the wall-clock
+      time of the build. `SOURCE_DATE_EPOCH` was already exported and already
+      honoured — for the image *config*. It does nothing to layer contents. The
+      flag that does is `rewrite-timestamp=true` on the exporter. With it, four
+      independent builds produced one digest.
+
+      **What is reproducible, precisely.** The **image manifest** digest.
+      Verified identical across buildkit v0.29.0 (embedded, docker driver) and
+      v0.32.2 (docker-container driver), cached and `--no-cache`, exported as an
+      OCI layout and pushed to a real registry, and with attestations attached
+      and not. For commit `8be4d327` that digest is
+      `sha256:be82167d…1dac`, every time.
+
+      **What is NOT, and never can be: the OCI index digest — which is the thing
+      consumers pin.** The index wraps the image manifest together with the
+      attestation manifest, and the attestations contain irreducibly per-build
+      values: buildkit stamps `startedOn`, `finishedOn` and a random
+      `invocationId` into the SLSA provenance, and syft stamps a `created` time
+      and a random UUID `documentNamespace` into the SBOM. Measured: the image
+      manifest was byte-identical across runs while the index digest changed
+      every single time.
+
+      That distinction is load-bearing and nobody had noticed it was there. This
+      file previously said "publish the expected digest per tag and it becomes a
+      claim anyone can check" in one place and "that digest is the OCI index …
+      which is what consumers pin" in another. Both sentences were reasonable;
+      together they described something impossible. **The claim is "the image
+      inside the published index is reproducible", not "the published digest is
+      reproducible".** Do not let it drift back.
+
+      **Why the checked digest is a CANONICAL build.** The digest depends on
+      `VCS_REF` and `BUILD_DATE`, which change with every commit, so an expected
+      digest for the current commit can never be committed alongside it — the
+      file would have to contain a hash of itself. `verify-repro` therefore
+      builds with fixed placeholders, making the digest a function of the things
+      that matter: Dockerfile, verified tarball, accepted signer list, pinned
+      base. Determinism with real args follows, because the args reach the image
+      only as label strings and are themselves derived from the commit.
+
+      **The cross-machine half is what CI provides.** `reproducible-digest.txt`
+      is generated on a dev box and asserted on a GitHub runner. Running the
+      build twice on one machine would only prove it is not random; comparing
+      against a value produced somewhere else is the actual claim.
+
+      **v31.1 cannot be retrofitted.** It was built before `rewrite-timestamp`,
+      so its layers carry `2026-09-19 14:20` mtimes — confirmed by exporting the
+      published image. The claim starts at the next release. `release.yml` now
+      runs `make verify-repro-published` before signing and prints the
+      reproducible digest into the job summary, so each release ships the value
+      an outsider needs to check it.
 
 ### Everything else
 
@@ -911,6 +965,34 @@ clean "works on my machine" difference in an environment nobody thinks to check.
 local image for smoke/verify-image/verify-contents, which need no attestations.
 `make push` carries `--provenance=mode=max --sbom=true`, where they can actually
 be stored. Do not add attestation flags back to a `--load` build.
+
+**`SOURCE_DATE_EPOCH` does not rewrite layer timestamps. `rewrite-timestamp`
+does.** The easy mistake, and the reason this repo believed it was close to
+reproducible for a week. buildkit applies `SOURCE_DATE_EPOCH` to the image
+*config* — the `created` field and the history entries — and leaves the mtimes
+inside the layer tars at wall-clock time. Both builds then have a matching
+`created` and completely different layer digests. The exporter option
+`rewrite-timestamp=true` is what rewrites the tar entries. `make push` and
+`scripts/verify-reproducible.sh` both pass it; `make build` cannot, see below.
+
+And the epoch has to be **exported**, not merely computed. buildkit reads it
+from the environment. Missing the export does not fail anything — it silently
+yields a different but still stable digest, so the check goes on passing locally
+while disagreeing with every other caller. That bug existed in the first draft of
+`verify-reproducible.sh` for about ten minutes and was caught only because the
+digest did not match the one measured by hand.
+
+**`rewrite-timestamp` conflicts with `unpack`, and `unpack` depends on your image
+store.** `buildx` refuses both at once:
+`exporter option "rewrite-timestamp" conflicts with "unpack"`. The containerd
+image store turns `unpack` on for `--load` and for `type=image`, so on a dev box
+with containerd enabled the flag is rejected and on a runner with the classic
+store it is not — the same "works on my machine" split that broke the attestation
+steps. `make push` passes `unpack=false` explicitly so both environments behave
+the same. `scripts/verify-reproducible.sh` sidesteps it entirely by exporting an
+OCI layout, which never unpacks. `make build` keeps `--load` and therefore does
+**not** rewrite timestamps: it exists to produce a local image for smoke,
+verify-image and verify-contents, none of which care about digests.
 
 **`make smoke` is not optional, and it must be able to fail.** The build can
 succeed and produce an image whose binaries cannot load, or which cannot write
