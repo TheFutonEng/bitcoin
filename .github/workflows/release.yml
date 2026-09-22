@@ -131,8 +131,18 @@ jobs:
           # Idempotent. Not needed on GitHub-hosted runners, which are ephemeral
           # — this is belt and braces for anyone invoking the same commands by
           # hand or on a reused runner.
+          #
+          # Pinned buildkit, read from the Makefile so there is one source for
+          # it. The push and the reproducibility check must assemble layers with
+          # the SAME buildkit, or `make verify-repro-published` below would be
+          # comparing an image built by one version against a rebuild by
+          # another. Digests happen to agree across v0.29.0 and v0.32.2, but
+          # "happens to agree" is not something to publish a claim on.
+          BUILDKIT_IMAGE="$(make -s print-buildkit-image)"
+          echo "buildkit: ${BUILDKIT_IMAGE}"
           docker buildx inspect release >/dev/null 2>&1 \
-            || docker buildx create --name release --driver docker-container
+            || docker buildx create --name release --driver docker-container \
+                 --driver-opt "image=${BUILDKIT_IMAGE}"
           docker buildx use release
           docker buildx inspect --bootstrap
 
@@ -200,8 +210,17 @@ jobs:
       # The index also wraps the attestations, and those carry per-build
       # timestamps and random ids, so the index digest differs on every build by
       # design and always will. Do not "fix" this to compare index digests.
+      #
+      # REPRO_BUILDER=release reuses the builder that performed the push, rather
+      # than letting the script start a second one. Same pinned buildkit image
+      # either way, so the digests would agree regardless — but reusing it means
+      # the rebuild runs on literally the same daemon that built what is in the
+      # registry, which is one fewer thing to argue about if this ever
+      # disagrees.
       - name: Prove the published image is reproducible
-        run: make verify-repro-published VERSION=${{ steps.v.outputs.version }}
+        run: |
+          REPRO_BUILDER=release \
+            make verify-repro-published VERSION=${{ steps.v.outputs.version }}
 
       # The SBOM is generated from the PUSHED image, so it describes exactly what
       # consumers will pull.

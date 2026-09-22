@@ -207,6 +207,7 @@ scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs
 scripts/fetch-sums-from-guix-sigs.sh  recover signed sums when upstream withdraws a release (read its header)
 scripts/cross-check-verify-py.sh second opinion on the threshold from Core's own verify.py
 scripts/verify-reproducible.sh   prove this commit builds the same image bytes anywhere
+                                 (uses a docker-container builder on a pinned buildkit)
 tests/test-threshold.sh          negative tests: both threshold gates, same fixtures, must agree
 reproducible-digest.txt          the canonical image manifest digest CI checks every PR against
 keys/                            armored pubkeys for the allowlisted builders ONLY,
@@ -644,6 +645,13 @@ real — what is left is getting the result published and signed.
       build twice on one machine would only prove it is not random; comparing
       against a value produced somewhere else is the actual claim.
 
+      The first CI run proved the point immediately, though not the way intended:
+      it failed with `OCI exporter is not supported for the docker driver`,
+      because the check had only ever run on a machine with the containerd image
+      store. The digest was right; the script could not execute anywhere else.
+      A gate that has only run in one environment is not a cross-environment
+      gate, and there is no way to find that out except to run it in another.
+
       **v31.1 cannot be retrofitted.** It was built before `rewrite-timestamp`,
       so its layers carry `2026-09-19 14:20` mtimes — confirmed by exporting the
       published image. The claim starts at the next release. `release.yml` now
@@ -982,17 +990,45 @@ while disagreeing with every other caller. That bug existed in the first draft o
 `verify-reproducible.sh` for about ten minutes and was caught only because the
 digest did not match the one measured by hand.
 
-**`rewrite-timestamp` conflicts with `unpack`, and `unpack` depends on your image
-store.** `buildx` refuses both at once:
+**Exporters depend on your image store, in BOTH directions, and the two traps
+point opposite ways.** This is the third time this class of difference has broken
+something here, and the third time it passed locally first.
+
+`rewrite-timestamp` conflicts with `unpack`:
 `exporter option "rewrite-timestamp" conflicts with "unpack"`. The containerd
-image store turns `unpack` on for `--load` and for `type=image`, so on a dev box
-with containerd enabled the flag is rejected and on a runner with the classic
-store it is not — the same "works on my machine" split that broke the attestation
-steps. `make push` passes `unpack=false` explicitly so both environments behave
-the same. `scripts/verify-reproducible.sh` sidesteps it entirely by exporting an
-OCI layout, which never unpacks. `make build` keeps `--load` and therefore does
-**not** rewrite timestamps: it exists to produce a local image for smoke,
+image store turns `unpack` on for `--load` and for `type=image`, so a dev box
+with containerd rejects the flag and a runner with the classic store does not.
+`make push` passes `unpack=false` explicitly so both behave the same.
+
+The OCI exporter goes the other way:
+`OCI exporter is not supported for the docker driver. Switch to a different
+driver, or turn on the containerd image store`. It needs containerd **or** a
+non-docker driver. A laptop with containerd has one; a runner has neither.
+
+So "use an OCI layout export to avoid the unpack conflict" fixes the first trap
+and walks straight into the second — which is exactly what happened, complete
+with a comment in `verify-reproducible.sh` asserting the OCI path "works the
+same on a laptop and on a runner". It does not. **The only thing that actually
+works the same in both environments is a `docker-container` builder**, which is
+what `release.yml` already used for attestations and what
+`verify-reproducible.sh` now uses too. Reach for that first rather than
+reasoning about which exporter happens to be portable.
+
+`make build` keeps `--load` on the default builder and therefore does **not**
+rewrite timestamps. That is fine: it exists to produce a local image for smoke,
 verify-image and verify-contents, none of which care about digests.
+
+**Buildkit itself is pinned by digest** (`BUILDKIT_IMAGE` in the Makefile,
+asserted by `check-pins.sh` alongside the two base images). It is not a base the
+image is built *from*, but it is the thing assembling the layers, so an unpinned
+buildkit can move the expected digest with no change to this repository — CI
+going red for a reason that is nobody's fault and that tells you nothing. The
+pin is for determinism of the gate, not because the property is fragile:
+measured 2026-09-22, buildkit v0.29.0 and v0.32.2 on different drivers produce
+the identical image manifest digest, and pinning left
+`reproducible-digest.txt` unchanged. `release.yml` reads the same value via
+`make print-buildkit-image`, so the push and the reproducibility check cannot
+drift onto different buildkits.
 
 **`make smoke` is not optional, and it must be able to fail.** The build can
 succeed and produce an image whose binaries cannot load, or which cannot write

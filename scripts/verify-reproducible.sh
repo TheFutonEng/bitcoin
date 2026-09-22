@@ -73,6 +73,8 @@ esac
 # Dockerfile agrees. Read rather than duplicate.
 RUNTIME_BASE="$(sed -n 's/^RUNTIME_BASE[[:space:]]*?*=[[:space:]]*\(.*\)$/\1/p' "${REPO_ROOT}/Makefile" | head -1)"
 [[ -n "${RUNTIME_BASE}" ]] || { echo "could not read RUNTIME_BASE from Makefile" >&2; exit 1; }
+BUILDKIT_IMAGE="$(sed -n 's/^BUILDKIT_IMAGE[[:space:]]*?*=[[:space:]]*\(.*\)$/\1/p' "${REPO_ROOT}/Makefile" | head -1)"
+[[ -n "${BUILDKIT_IMAGE}" ]] || { echo "could not read BUILDKIT_IMAGE from Makefile" >&2; exit 1; }
 
 if [[ "${mode}" == "compare" || "${mode}" == "write" ]]; then
   # Canonical placeholders. Changing any of these changes every expected digest,
@@ -109,6 +111,19 @@ trap 'rm -rf "${WORK}"' EXIT
 # other caller. The Makefile exports it for the same reason.
 export SOURCE_DATE_EPOCH="${epoch}"
 
+# A dedicated docker-container builder, on a pinned buildkit. Idempotent, so
+# repeated local runs reuse it; on an ephemeral runner it is created once.
+#
+# Pinning buildkit matters more here than anywhere else in the repo: it is the
+# thing assembling the layers whose digest is the assertion. An unpinned builder
+# could move the expected digest with no change to this repository.
+BUILDER="${REPRO_BUILDER:-bitcoin-repro}"
+if ! docker buildx inspect "${BUILDER}" >/dev/null 2>&1; then
+  echo "creating builder ${BUILDER} on ${BUILDKIT_IMAGE}"
+  docker buildx create --name "${BUILDER}" --driver docker-container \
+    --driver-opt "image=${BUILDKIT_IMAGE}" >/dev/null
+fi
+
 echo "building ${label} — platform ${PLATFORM}, source-date-epoch ${epoch}"
 
 # Deliberately NOT --load and NOT --push.
@@ -122,15 +137,26 @@ echo "building ${label} — platform ${PLATFORM}, source-date-epoch ${epoch}"
 # difference was mtimes.
 #
 # It also conflicts with `unpack`, which the containerd image store turns on for
-# --load and for type=image. An OCI layout export never unpacks, so this path
-# works the same on a laptop with the containerd store and on a runner without
-# it — the environment difference that has broken this repo's build tooling
-# twice already.
+# --load and for type=image. An OCI layout export never unpacks, which avoids
+# that — but it introduces the mirror-image problem, and an earlier version of
+# this comment got it exactly backwards:
+#
+#   ERROR: failed to build: OCI exporter is not supported for the docker driver.
+#
+# The OCI exporter needs the containerd image store OR a non-docker driver. A
+# laptop with containerd enabled has one; a GitHub runner has neither, so this
+# script passed locally and failed on the first CI run. That is the same
+# "works on my machine" split that broke the attestation steps twice, walked
+# into a third time while writing the fix for it.
+#
+# Hence the dedicated docker-container builder below, which is what release.yml
+# already does for attestations and for the same underlying reason: that driver
+# supports every exporter regardless of how the host's docker is configured.
 #
 # Attestations are off on purpose: they are what makes the index digest vary,
 # and they do not affect the image manifest. Verified — the same manifest digest
 # comes out with them attached and without.
-docker buildx build \
+docker buildx --builder "${BUILDER}" build \
   --platform "${PLATFORM}" \
   --network=none \
   --build-arg BITCOIN_VERSION="${VERSION}" \

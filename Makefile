@@ -17,6 +17,18 @@ TAG           ?= $(VERSION)
 # Pinned by digest (invariant 4). Keep in sync with the ARG in the Dockerfile.
 RUNTIME_BASE  ?= gcr.io/distroless/cc-debian12@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 MIN_GOOD_SIGS ?= 6
+# The buildkit used for reproducibility checks and for the release push, pinned
+# by digest for the same reason as the base images (invariant 5). It is a build
+# input: an unpinned buildkit could change how layers are assembled and move the
+# expected digest with no change to this repository, turning CI red for a reason
+# that is nobody's fault and telling you nothing.
+#
+# The pin is for determinism of the GATE, not because the property is fragile —
+# the same image manifest digest was measured under buildkit v0.29.0 and v0.32.2
+# on different drivers. Bumping this is a reviewed commit, and it is expected to
+# leave reproducible-digest.txt unchanged; if it does not, that is worth
+# understanding before merging.
+BUILDKIT_IMAGE ?= moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
 # Seconds `make smoke` waits for the regtest node to finish loading.
 SMOKE_TIMEOUT ?= 60
 
@@ -57,7 +69,7 @@ BUILD_DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>
 
 export SOURCE_DATE_EPOCH
 
-.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold repro-digest repro-digest-write verify-repro verify-repro-published clean
+.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold print-buildkit-image repro-digest repro-digest-write verify-repro verify-repro-published clean
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s$$'\t'
@@ -194,6 +206,9 @@ verify-contents: ## Prove EVERY file in the image is accounted for, not just the
 # is reproducible, the published OCI INDEX is not, because the attestations it
 # wraps carry per-build timestamps and random ids. Read the header of
 # scripts/verify-reproducible.sh before repeating either claim.
+print-buildkit-image: ## Print the pinned buildkit image (used by release.yml)
+	@echo "$(BUILDKIT_IMAGE)"
+
 repro-digest: ## Print the image manifest digest THIS commit builds
 	scripts/verify-reproducible.sh --release
 
