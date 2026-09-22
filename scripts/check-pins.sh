@@ -45,10 +45,16 @@ cmp_vals "RUNTIME_BASE" "${mk_base}" "${df_base}"
 # and therefore the one where a swapped image buys an attacker the most. It sat
 # on a floating tag until 2026-09-20 because the invariant said "runtime base"
 # and nobody re-read it against the Dockerfile.
+#
+# The buildkit image counts too, added 2026-09-22. It is not a base the image is
+# built FROM, but it is the thing that assembles the layers, so an unpinned one
+# can change the output digest with no change to this repository — which is the
+# whole property `make verify-repro` asserts. Same class of input, same rule.
 df_verifier="$(sed -n 's/^ARG VERIFIER_BASE=\(.*\)/\1/p' Dockerfile)"
+mk_buildkit="$(sed -n 's/^BUILDKIT_IMAGE[[:space:]]*?*=[[:space:]]*\(.*\)$/\1/p' Makefile | head -1)"
 pinned=1
 for pair in "runtime/Dockerfile:${df_base}" "runtime/Makefile:${mk_base}" \
-            "verifier/Dockerfile:${df_verifier}"; do
+            "verifier/Dockerfile:${df_verifier}" "buildkit/Makefile:${mk_buildkit}"; do
   where="${pair%%:*}"; val="${pair#*:}"
   if [[ -z "${val}" ]]; then
     printf '  FAIL  %-18s could not read %s\n' "base pinning" "${where}"; pinned=0; fail=1
@@ -57,7 +63,7 @@ for pair in "runtime/Dockerfile:${df_base}" "runtime/Makefile:${mk_base}" \
     pinned=0; fail=1
   fi
 done
-(( pinned )) && printf '  OK    %-18s runtime and verifier both pinned by digest\n' "base pinning"
+(( pinned )) && printf '  OK    %-18s runtime, verifier and buildkit pinned by digest\n' "base pinning"
 
 # Every allowlisted fingerprint needs its public key present, or gpg cannot
 # verify that builder's signature and the fingerprint sits in the allowlist

@@ -1,0 +1,19 @@
+# Reproducible image manifest digest for a CANONICAL build of this tree.
+#
+# Regenerate with:  make repro-digest-write
+# Verified by:      make verify-repro   (runs in CI on every pull request)
+#
+# This is NOT the digest consumers pin. Consumers pin the published OCI index,
+# which also contains attestations and is deliberately not reproducible — see
+# the header of scripts/verify-reproducible.sh. This is the digest of the image
+# INSIDE that index, built with placeholder VCS_REF/BUILD_DATE so the value does
+# not change on every commit.
+#
+# It changes when the Dockerfile, the verified tarball, the accepted signer list
+# or the pinned base image changes. Any other change to it is a reproducibility
+# regression, and CI is what says so.
+#
+# version:  31.1
+# triple:   x86_64-linux-gnu
+# platform: linux/amd64
+sha256:c86c1dcacd7d9037f032c57eb48976fc99747d34bc9c87a6802e50310db945b6

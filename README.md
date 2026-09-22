@@ -268,6 +268,43 @@ them from there automatically, and you still learn the correct hash. The
 come from your own published image or archive, checked against the recovered
 sums.
 
+## Reproducible builds
+
+Build the tagged commit yourself and check you get the same image:
+
+```bash
+git checkout <the release tag>          # e.g. v31.2
+make fetch-tarball
+make verify-repro-published TAG=31.2
+```
+
+Each release prints the expected image manifest digest in its workflow summary,
+so you can also compare by eye with `make repro-digest`.
+
+That rebuilds from the commit and compares against what is actually in the
+registry. It is a stronger statement than a signature: a signature says who
+built the image, this says anyone would have built the same one.
+
+**Read what is being compared.** The published digest you pin is an OCI *index*,
+which wraps the image manifest together with the attestations. The **image
+manifest** is reproducible; the index is not and never will be, because buildkit
+writes `startedOn`, `finishedOn` and a random `invocationId` into the SLSA
+provenance, and syft writes a timestamp and a random UUID into the SBOM. Two
+builds of the same commit differ there every time. The check above compares the
+image manifest inside the index, which is the part that describes the bytes you
+actually run.
+
+**v31.1 predates this and cannot match.** It was built without layer-timestamp
+rewriting, so its files carry the wall-clock time of that build. The check says
+so rather than passing quietly. The claim starts with the first release
+published after this landed.
+
+On every pull request CI asserts that a GitHub runner builds the same image as
+the digest committed in `reproducible-digest.txt`, which was generated on a
+different machine. Verified by hand across two buildkit versions (v0.29.0 and
+v0.32.2), two drivers, cached and uncached, and via both an OCI export and a
+registry push.
+
 ## Known gaps
 
 - **Negative tests cover the signature threshold only.** `make test` runs 35
@@ -276,8 +313,12 @@ sums.
   keyring, injected pin drift, an unwritable datadir, an unreadable image, a
   swapped image at the same tag — have each been shown to fail closed by hand,
   but those proofs are ad hoc rather than runnable, so nothing re-checks them.
-- **arm64 is untested.** The pinned base is already a multi-arch index, so the
-  base is not the blocker.
+- **arm64 is untested**, including for reproducibility — `make verify-repro`
+  pins linux/amd64. The pinned base is already a multi-arch index, so the base is
+  not the blocker.
+- **The published *index* digest is not reproducible, and cannot be.** The image
+  inside it is. See "Reproducible builds" above; the distinction is real and the
+  index digest is the one you pin.
 - **Two deliberate holes in the contents manifest.** Five paths Docker injects
   into a container (`DOCKER_RUNTIME_PATHS`) are excluded outright; content
   planted there is inert because Docker overrides all five at runtime, but it is
