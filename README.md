@@ -8,21 +8,23 @@ manifest of everything inside it.
 Scope is deliberately narrow: this repo **builds, verifies, and publishes an
 image**. It says nothing about how you deploy or operate a node.
 
-> **Status: published.** `ghcr.io/thefutoneng/bitcoin:31.1` is live, keyless-signed,
-> and carries three attestations — provenance, SBOM, and a contents manifest
-> accounting for every file in the image. All four verify from a clean machine
-> using the commands in [Verifying what you pulled](#verifying-what-you-pulled).
+> **Status: published.** `ghcr.io/thefutoneng/bitcoin:31.1-1` is live. It is
+> signed two ways — keyless and with a published key pair — and carries three
+> attestations: provenance, SBOM, and a contents manifest accounting for every
+> file in the image. All of it verifies from a clean machine using the commands
+> in [Verifying what you pulled](#verifying-what-you-pulled), and the image
+> inside it is reproducible: rebuild the tag yourself and you get the same bytes.
 >
 > ```
-> ghcr.io/thefutoneng/bitcoin@sha256:b36d45e23e2dd5499660b2d3b184d28069c14577a2330334de6ad186d2459fd2
+> ghcr.io/thefutoneng/bitcoin@sha256:0dc05d92fc66979482c0c1ed572c6d08f3f5b5c362e54f12fe885a432673649e
 > ```
 >
 > Pin that digest.
 >
-> That image predates the `<bitcoin version>-<image revision>` tagging scheme
-> described under [Versioning](#versioning) and is the only one published under
-> a bare version tag. Later releases are tagged `31.1-1`, `31.1-2` and so on,
-> each immutable.
+> An earlier `ghcr.io/thefutoneng/bitcoin:31.1` also exists. It predates both
+> the `<bitcoin version>-<image revision>` tagging scheme described under
+> [Versioning](#versioning) and the reproducibility work, and is the only image
+> published under a bare version tag. Prefer `31.1-1`.
 
 ## Why this exists
 
@@ -408,16 +410,26 @@ builds of the same commit differ there every time. The check above compares the
 image manifest inside the index, which is the part that describes the bytes you
 actually run.
 
-**v31.1 predates this and cannot match.** It was built without layer-timestamp
-rewriting, so its files carry the wall-clock time of that build. The check says
-so rather than passing quietly. The claim starts with the first release
-published after this landed.
+**Confirmed for `31.1-1`**, the first release built with layer-timestamp
+rewriting. A laptop rebuilding the tag produces
+`sha256:bbd7da4f…ae2c1`, which is exactly the image manifest inside the
+published index — two machines, same bytes.
 
-On every pull request CI asserts that a GitHub runner builds the same image as
-the digest committed in `reproducible-digest.txt`, which was generated on a
+**`31.1` predates this and cannot match.** It was built without timestamp
+rewriting, so its files carry the wall-clock time of that build. The check says
+so rather than passing quietly.
+
+On every pull request CI also asserts that a GitHub runner builds the same image
+as the digest committed in `reproducible-digest.txt`, which was generated on a
 different machine. Verified by hand across two buildkit versions (v0.29.0 and
-v0.32.2), two drivers, cached and uncached, and via both an OCI export and a
-registry push.
+v0.32.2), two drivers, and via both an OCI export and a registry push.
+
+One thing the check has to do, and it is not obvious: **it builds with
+`--no-cache`.** BuildKit's cache key does not include `SOURCE_DATE_EPOCH`, so a
+layer cached from a build at a different epoch is reused with its original
+timestamps and never re-rewritten. Without the flag, a machine that had built
+this repo before would report a mismatch on a perfectly good image — which is
+what happened on the v31.1-1 release, and is why the flag is there.
 
 ## Known gaps
 
