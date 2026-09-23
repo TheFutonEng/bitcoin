@@ -75,6 +75,12 @@ RUNTIME_BASE="$(sed -n 's/^RUNTIME_BASE[[:space:]]*?*=[[:space:]]*\(.*\)$/\1/p' 
 [[ -n "${RUNTIME_BASE}" ]] || { echo "could not read RUNTIME_BASE from Makefile" >&2; exit 1; }
 BUILDKIT_IMAGE="$(sed -n 's/^BUILDKIT_IMAGE[[:space:]]*?*=[[:space:]]*\(.*\)$/\1/p' "${REPO_ROOT}/Makefile" | head -1)"
 [[ -n "${BUILDKIT_IMAGE}" ]] || { echo "could not read BUILDKIT_IMAGE from Makefile" >&2; exit 1; }
+# Passed explicitly rather than leaning on the Dockerfile's ARG default. The
+# default is currently correct — check-pins.sh asserts it equals REVISION — but
+# that makes this script's output depend on a second invariant holding, for no
+# reason other than that it happened to be omitted here.
+REVISION="$(sed -n 's/^REVISION[[:space:]]*?*=[[:space:]]*\([0-9]\+\).*/\1/p' "${REPO_ROOT}/Makefile" | head -1)"
+[[ -n "${REVISION}" ]] || { echo "could not read REVISION from Makefile" >&2; exit 1; }
 
 if [[ "${mode}" == "compare" || "${mode}" == "write" ]]; then
   # Canonical placeholders. Changing any of these changes every expected digest,
@@ -156,10 +162,37 @@ echo "building ${label} — platform ${PLATFORM}, source-date-epoch ${epoch}"
 # Attestations are off on purpose: they are what makes the index digest vary,
 # and they do not affect the image manifest. Verified — the same manifest digest
 # comes out with them attached and without.
+#
+# `--no-cache` is NOT optional, and leaving it out produced a false alarm on the
+# first real release. **BuildKit's cache key does not include
+# SOURCE_DATE_EPOCH.** A layer cached from a build at a different epoch is reused
+# as-is, and `rewrite-timestamp` does not re-rewrite it — so the layer keeps the
+# timestamps of whenever it was first built. Measured on v31.1-1: a laptop with
+# layers cached from previous commits reported
+# sha256:7eeef666… while the runner, building fresh, published
+# sha256:bbd7da4f…. The image was identical in every other respect; the layer
+# tars carried mtimes from "yesterday" and "this morning" instead of the commit
+# epoch. With --no-cache the laptop reproduced the published digest exactly.
+#
+# Why nothing caught it: the canonical mode pins the epoch to 0, so its cache is
+# always self-consistent and it is immune by accident. Only --release and
+# --against vary the epoch, and neither runs in CI. An earlier "cached and
+# --no-cache agree" measurement passed only because the cache happened to hold
+# layers from the same epoch at that moment.
+#
+# This matters more than a slow rebuild: the README tells consumers to run
+# `make verify-repro-published`, and on any machine that has built this repo
+# before, the cached path would report a mismatch on a perfectly good image — a
+# verification tool crying wolf about the exact claim it exists to support.
+#
+# Applied to every mode, not just the two affected ones. Canonical is safe only
+# because its epoch never changes, and relying on that is how this got here.
 docker buildx --builder "${BUILDER}" build \
+  --no-cache \
   --platform "${PLATFORM}" \
   --network=none \
   --build-arg BITCOIN_VERSION="${VERSION}" \
+  --build-arg IMAGE_REVISION="${REVISION}" \
   --build-arg TARGET_TRIPLE="${TRIPLE}" \
   --build-arg RUNTIME_BASE="${RUNTIME_BASE}" \
   --build-arg MIN_GOOD_SIGS="${MIN_GOOD_SIGS}" \

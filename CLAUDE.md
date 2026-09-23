@@ -245,6 +245,110 @@ back out of the image you just produced and proves they are byte-identical to
 the tarball that cleared the signature threshold. If the Dockerfile ever starts
 doing something clever, this catches it.
 
+## Releasing
+
+A release is a signed git tag. Everything else is automatic, and everything that
+could publish the wrong thing is guarded — but the guards only run at tag time,
+so read this before cutting one.
+
+### Before you tag
+
+```bash
+git checkout main && git pull --ff-only
+git status --porcelain          # must be empty
+make print-version              # e.g. 31.1
+make print-revision             # e.g. 1
+```
+
+**The tag must be `v<version>-<revision>` using exactly those two values.**
+`release.yml` re-derives them from the tag and refuses to publish if they
+disagree with the tree. That check exists because nothing else catches the
+mismatch: the build would succeed, the image would be labelled from the Makefile
+and published under the tag, and a consumer who pinned the digest would only
+ever see the label.
+
+```bash
+make repro-digest               # note this value
+```
+
+Write that digest down. The release prints the same figure into its job summary;
+if they match, the published image is bit-for-bit what this commit builds, on
+two different machines. That is the claim, and comparing is how you check it.
+
+### Tag and push
+
+```bash
+git tag -s v31.1-1 -m "bitcoin core 31.1, image revision 1"
+git push origin v31.1-1
+```
+
+Signed, because the tag is the trust root for the keyless signature — the
+identity binds to `refs/tags/<tag>` on this repository.
+
+### What the workflow does, in order
+
+Worth knowing so a failure tells you where you stand:
+
+1. **Refuse a non-tag ref**, then **resolve version and revision** and compare
+   them to the tree. *Nothing has been published yet.*
+2. **Install cosign and syft**, pinned by version and verified by hash.
+3. **Set up a docker-container builder** on the pinned buildkit.
+4. **Signing plan** — fails outright if `COSIGN_KEY` is absent, unless
+   `allow_keyless_only=true` was passed. This is the guard against a silent
+   keyless-only downgrade.
+5. **The whole verification chain**: fetch-tarball, verify, cross-check, build,
+   smoke, verify-image, verify-contents. *Still nothing published.*
+6. **Log in to GHCR and push.** ← the first irreversible step.
+7. **Re-verify the PUSHED image** — verify-image and verify-contents against
+   what is actually in the registry, not the local build.
+8. **Prove the published image is reproducible** — rebuilds the tag and compares
+   the image manifest inside the published index.
+9. **SBOM**, then **sign keyless**, then **sign with the key pair**.
+10. **Verify the signing chain round-trips** — signature plus all three
+    attestations, in whichever modes were used.
+11. **Publish the digest** to the job summary, with the reproducible image
+    manifest digest and the command to check it.
+
+Steps 1–5 fail safely: nothing reached the registry. Steps 7–8 fail with an
+**unsigned image already public**, which is recoverable but needs a decision.
+
+### After it goes green
+
+```bash
+# From a clean shell with no credentials — as an outsider, not as the runner.
+cosign verify ghcr.io/thefutoneng/bitcoin:31.1-1 \
+  --certificate-identity-regexp '^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+make verify-repro-published TAG=31.1-1
+```
+
+A workflow verifying its own signature proves the plumbing. An outsider
+verifying it with the published regexp proves the claim. **Do the second one
+after every release**, and compare the job summary's digest against the
+`make repro-digest` value you wrote down.
+
+### When a release fails
+
+The rule the versioning scheme exists to make possible:
+
+- **Nothing reached the registry** (steps 1–5): delete the tag, fix, re-tag the
+  same name. No artifact ever carried it.
+  ```bash
+  git tag -d v31.1-1 && git push origin :refs/tags/v31.1-1
+  ```
+- **Anything was published** (step 6 onward): **do not move the tag.** Bump
+  `REVISION`, commit, and tag `v31.1-2`. A moved tag means two different
+  artifacts under one name, which is exactly what immutable revision tags are
+  for. This is a change from how v31.1 was handled, when moving the tag was the
+  only option available.
+
+**To re-run a release, use `workflow_dispatch` launched FROM the tag**, not from
+a branch. It takes no inputs other than `allow_keyless_only` precisely so the
+ref is the only source of truth. Note the trap found on v31.1: dispatch executes
+the workflow file **as it existed at that ref**. If the bug you are re-running
+to fix is in `release.yml` itself, re-running from the old tag re-runs the bug.
+
 ## What consumers need to know
 
 - **Tags are `<bitcoin version>-<image revision>`**, Debian's
@@ -544,6 +648,45 @@ real — what is left is getting the result published and signed.
       **The GHCR-goes-private worry did not apply** — the package inherited
       public visibility from the public repo. Anonymous pull token, HTTP 200, no
       manual step needed.
+
+- [x] **v31.1-1, 2026-09-23 — the first release under the revision scheme, and
+      the first reproducible one.**
+
+      ```
+      ghcr.io/thefutoneng/bitcoin:31.1-1
+      index sha256:0dc05d92fc66…3649e
+      image sha256:bbd7da4f3525…ae2c1   <- the reproducible half
+      ```
+
+      Same upstream binaries as v31.1; what changed was the packaging, which is
+      the case the `<version>-<revision>` scheme exists to name.
+
+      Four pieces of machinery ran for the first time, none of which a pull
+      request can exercise: the tag-versus-tree guard, `make push` with the
+      explicit `--output` and `rewrite-timestamp`, the pinned-buildkit release
+      builder, and `verify-repro-published`. All 24 steps passed first time.
+
+      Verified from a clean shell as an outsider, not from the runner: keyless
+      and key-pair signatures, plus all three attestations. `key pair: yes` in
+      the signing plan, so no silent keyless downgrade.
+
+      **The release also found the buildkit cache bug** — see the gotcha below.
+      The digest printed by `make repro-digest` before tagging did not match the
+      one the runner published, which looked like a reproducibility failure and
+      was in fact a bug in `verify-reproducible.sh`. With `--no-cache` the
+      laptop reproduces the published image exactly. So the first release under
+      this scheme is also the first to have its reproducibility confirmed by a
+      second machine, which is the whole point of the claim:
+
+      ```
+      make verify-repro-published TAG=31.1-1
+      OK — the published image is bit-for-bit this commit
+      ```
+
+      Lesson worth keeping: the pre-tag `make repro-digest` value is what caught
+      it. Writing that number down and comparing it against the job summary is
+      not ceremony — it is the only step in the procedure that compares two
+      machines, and it earned its place on the first run.
 
 - [ ] **Add a rebuild-from-published-image path.** Publishing preserves the old
       image but not the ability to put that Bitcoin version on a *new* base,
@@ -1070,6 +1213,41 @@ yields a different but still stable digest, so the check goes on passing locally
 while disagreeing with every other caller. That bug existed in the first draft of
 `verify-reproducible.sh` for about ten minutes and was caught only because the
 digest did not match the one measured by hand.
+
+**And buildkit's cache key does NOT include `SOURCE_DATE_EPOCH`.** A layer
+cached from a build at a different epoch is reused as-is, and
+`rewrite-timestamp` does not re-rewrite it — so the layer keeps the mtimes of
+whenever it was first built. Any reproducibility check therefore needs
+`--no-cache`, and `scripts/verify-reproducible.sh` now passes it in every mode.
+
+Found on the v31.1-1 release, and it produced exactly the wrong kind of failure.
+A laptop holding layers cached from earlier commits reported
+`sha256:7eeef666…` while the runner, building fresh, published
+`sha256:bbd7da4f…`. Everything else about the two images was identical — same
+commit, same epoch, byte-identical labels, all 18 base layers matching — and
+only the three layers this repo adds differed. Their tars carried mtimes from
+"yesterday" and "this morning" rather than the commit epoch. With `--no-cache`
+the laptop reproduced the published digest exactly, so **the build was
+reproducible the whole time and the tool was wrong about it**.
+
+The canonical mode was immune by accident: it pins the epoch to `0`, so its
+cache is always self-consistent. Only `--release` and `--against` vary the
+epoch, and neither runs in CI. An earlier "cached and `--no-cache` agree"
+measurement had passed only because the cache happened to hold layers from the
+same epoch at that moment — a measurement that was true when taken and not a
+property of the system.
+
+Worth being clear about why this was worse than a missing check. The README
+tells consumers to run `make verify-repro-published`. On any machine that had
+built this repo before, that command would have reported a mismatch **on a
+perfectly good image** — a verification tool crying wolf about the exact claim
+it exists to support. A check that fails loudly on correct input destroys more
+trust than one that was never written.
+
+That is the third time buildkit cache semantics have produced a wrong answer
+here, after the attestation/image-store split and the `CACHED`-step problem in
+`tests/test-threshold.sh`. **If a check involves buildkit and its result is
+supposed to mean something, pass `--no-cache` and stop reasoning about it.**
 
 **Exporters depend on your image store, in BOTH directions, and the two traps
 point opposite ways.** This is the third time this class of difference has broken
