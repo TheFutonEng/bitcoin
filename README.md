@@ -190,39 +190,96 @@ it, and that is worth more than closing a one-image gap in the numbering.
 
 ## Using the image
 
+```bash
+docker run --rm ghcr.io/thefutoneng/bitcoin:31.1-1
+```
+
+That works with no arguments and no mount — it runs mainnet against an anonymous
+volume. Everything below is about doing something more deliberate than that.
+
 - Runs as UID/GID **65532:65532** (distroless `nonroot`).
-- Datadir `/data`, declared as a `VOLUME`, with `BITCOIN_DATA=/data`.
-- Entrypoint is `bitcoind` directly — no shell, no entrypoint script, no
-  in-container `chown`. Configuration arrives as arguments or a mounted
-  `bitcoin.conf`.
+- Datadir `/data`, declared as a `VOLUME` and present in the image owned by
+  65532, so a fresh volume is usable without preparation.
+- Entrypoint is `bitcoind` with `-datadir=/data -printtoconsole` already
+  supplied. **Your arguments are appended, not substituted** — see below.
 - Ports: `8332` RPC, `8333` P2P, `28332`/`28333` ZMQ. These are `EXPOSE`
   metadata only. RPC and ZMQ bind nothing unless you pass the matching
   `-rpcbind` / `-zmqpubrawblock` arguments; the ZMQ port numbers are
   convention, not a Bitcoin Core default.
-- Ships `bitcoind` and `bitcoin-cli` only.
+- Ships `bitcoind` and `bitcoin-cli` only. No shell, no package manager, no
+  entrypoint script, no in-container `chown`.
 - Provenance breadcrumbs at `/usr/local/share/bitcoind-provenance/`, plus a
   cosign attestation.
 
-**The datadir must be writable by UID 65532 before you start the container.**
-The image deliberately contains no entrypoint script and does no in-container
-`chown`, and `/data` does not exist in the distroless base — so a fresh named
-volume comes up owned by root and `bitcoind` cannot write to it. Prepare the
-directory on the host:
+### Arguments append
+
+`-datadir=/data` and `-printtoconsole` live in `ENTRYPOINT`, which Docker
+prepends to whatever you pass, so this keeps its datadir:
+
+```bash
+docker run -v bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.1-1 -txindex=1
+```
+
+Both remain overridable, because Bitcoin Core takes the last duplicate on the
+command line: `-datadir=/elsewhere` wins, and `-noprinttoconsole` silences the
+logs.
+
+This was not always true. Until `31.1-1` the flags were in `CMD`, which Docker
+**replaces** rather than appends — so passing any argument silently moved the
+datadir to `/home/nonroot/.bitcoin` on the container layer. The node started,
+logged normally, ignored your volume, and lost the chain on `--rm`.
+`make test` now asserts the mounted volume is non-empty afterwards.
+
+### Configuration
+
+There is no `bitcoin.conf` in the image, by design: a config file baked in is
+one more thing to keep accurate and it cannot be overridden without shadowing
+it. `bitcoind` runs on its own defaults until you provide one. Two ways:
+
+```bash
+# 1. inside the data volume — read automatically, no flag needed
+docker run -v ./bitcoin.conf:/data/bitcoin.conf:ro -v bitcoin-data:/data \
+  ghcr.io/thefutoneng/bitcoin:31.1-1
+
+# 2. anywhere else, named explicitly
+docker run -v ./conf:/etc/bitcoin:ro -v bitcoin-data:/data \
+  ghcr.io/thefutoneng/bitcoin:31.1-1 -conf=/etc/bitcoin/bitcoin.conf
+```
+
+**[`examples/bitcoin.conf`](examples/bitcoin.conf) is a commented teaching
+file**, not a recommended configuration — every value in it is a placeholder.
+It documents the container-specific details, the most important being that
+`datadir=` in a config file is **silently ignored**; Bitcoin Core accepts it on
+the command line only.
+
+That example is also a test fixture. `make test` mounts it, boots a node on it,
+and checks every option it names still exists in the shipped `bitcoind` —
+because Core does **not** fail on an option it does not recognise. It logs
+`Ignoring unknown configuration value` and carries on, so a stale example would
+leave someone's settings quietly doing nothing.
+
+### Bind mounts still need preparing
+
+A host directory keeps its own ownership, so the image's `/data` does not help
+there:
 
 ```bash
 mkdir -p /srv/bitcoin-data && chown 65532:65532 /srv/bitcoin-data
-
-docker run --rm -v /srv/bitcoin-data:/data \
-  ghcr.io/thefutoneng/bitcoin:31.1 \
-  -datadir=/data -printtoconsole
+docker run --rm -v /srv/bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.1-1
 ```
 
-Because there is no shell in the image, `docker exec ... sh` will not work. Use
-`bitcoin-cli` as the entrypoint instead:
+Under Kubernetes, `securityContext.fsGroup: 65532` does the same job for a
+PersistentVolume.
+
+### There is no shell
+
+`docker exec ... sh` will not work. Run `bitcoin-cli` as its own entrypoint, and
+give it the datadir — `--entrypoint` discards the image's own arguments:
 
 ```bash
 docker run --rm --entrypoint /usr/local/bin/bitcoin-cli \
-  ghcr.io/thefutoneng/bitcoin:31.1 -version
+  -v bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.1-1 \
+  -datadir=/data getblockchaininfo
 ```
 
 ## Verifying what you pulled
@@ -241,7 +298,7 @@ cosign verify \
   --certificate-identity-regexp \
     '^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/thefutoneng/bitcoin:31.1
+  ghcr.io/thefutoneng/bitcoin:31.1-1
 ```
 
 The identity is not optional. Without it you would accept a signature from
@@ -260,7 +317,7 @@ the signature:
 
 ```bash
 cosign verify --key cosign.pub --insecure-ignore-tlog \
-  ghcr.io/thefutoneng/bitcoin:31.1
+  ghcr.io/thefutoneng/bitcoin:31.1-1
 ```
 
 The interesting attestation is the contents manifest. It tells you what is in
@@ -272,7 +329,7 @@ cosign verify-attestation \
     '^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --type https://github.com/TheFutonEng/bitcoin/predicate/bitcoind-contents/v1 \
-  ghcr.io/thefutoneng/bitcoin:31.1 \
+  ghcr.io/thefutoneng/bitcoin:31.1-1 \
   | jq -r .payload | base64 -d | jq '.predicate.counts, .predicate.complete'
 ```
 
@@ -306,6 +363,10 @@ scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs
 scripts/fetch-sums-from-guix-sigs.sh  recover signed sums for a withdrawn release
 scripts/check-pins.sh            assert duplicated values agree across files
 scripts/build-keyring.sh         regenerate the keyring the container build uses
+scripts/verify-reproducible.sh   prove this commit builds the same image bytes anywhere
+tests/test-threshold.sh          negative tests for the signature threshold
+tests/test-config.sh             prove config and the datadir reach the container
+examples/bitcoin.conf            commented teaching file, and the fixture the test runs
 .github/workflows/ci.yml         runs the whole chain on every pull request
 keys/                            pubkeys for the allowlisted builders, the allowlist,
                                  and the derived keyring the build verifies against

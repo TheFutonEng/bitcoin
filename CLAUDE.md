@@ -209,6 +209,8 @@ scripts/cross-check-verify-py.sh second opinion on the threshold from Core's own
 scripts/verify-reproducible.sh   prove this commit builds the same image bytes anywhere
                                  (uses a docker-container builder on a pinned buildkit)
 tests/test-threshold.sh          negative tests: both threshold gates, same fixtures, must agree
+tests/test-config.sh             config and the datadir actually reach the container
+examples/bitcoin.conf            commented teaching file AND the fixture test-config.sh runs
 reproducible-digest.txt          the canonical image manifest digest CI checks every PR against
 keys/                            armored pubkeys for the allowlisted builders ONLY,
                                  trusted-fingerprints.txt, and trusted-keyring.gpg
@@ -271,9 +273,37 @@ doing something clever, this catches it.
   signed with the old one.
 - Runs as UID/GID **65532:65532** (distroless `nonroot`). Changes if the runtime
   base changes.
-- Datadir `/data`, declared `VOLUME`, `BITCOIN_DATA=/data`.
-- Entrypoint is `bitcoind` directly. No shell, no entrypoint script, no
-  in-container chown. Config arrives as args or a mounted `bitcoin.conf`.
+- Datadir `/data`, declared `VOLUME`, **and present in the image owned by
+  65532** so a fresh named or anonymous volume is usable with no preparation.
+  Docker seeds a new volume's ownership from the mount point in the image; /data
+  did not exist in the distroless base, so before 2026-09-23 a plain
+  `docker run` with no arguments and no mount died on "Unable to open settings
+  file /data/settings.json.tmp for writing". There is no shell, so chown-ing in
+  an entrypoint script — what `bitcoin/bitcoin` does with gosu — is not
+  available. Creating the directory at build time is the only mechanism left.
+  It does **not** help a bind mount, where the host's ownership wins, and is
+  moot under Kubernetes where `securityContext.fsGroup` chowns at mount time.
+- **`ENTRYPOINT` carries `-datadir=/data -printtoconsole`; `CMD` is empty.** The
+  distinction is not cosmetic: Docker REPLACES CMD with user arguments but
+  PREPENDS ENTRYPOINT to them. With the flags in CMD — as they were until
+  2026-09-23 — any argument a consumer passed silently dropped the datadir, so
+  `docker run -v vol:/data image -txindex=1` wrote the chain to
+  /home/nonroot/.bitcoin on the container layer, ignored the mounted volume,
+  started normally and lost everything on `--rm`. Both flags stay overridable,
+  measured: Core takes the last duplicate on the command line, so
+  `-datadir=/other` wins and `-noprinttoconsole` silences it.
+- **There is no `BITCOIN_DATA`, and there should not be.** It was set until
+  2026-09-23 and did nothing — bitcoind does not read it. It is a convention
+  from `bitcoin/bitcoin`, whose entrypoint *script* expands it into `-datadir=`.
+  Both READMEs listed it as a consumer fact. Verified inert by running with
+  `BITCOIN_DATA=/elsewhere`: the datadir did not move.
+- **No `bitcoin.conf` ships in the image.** Decided 2026-09-23. Upstream's
+  tarball contains one, but it is 24,789 bytes of which exactly five lines are
+  not comments or blank, and all five are empty network section headers — a
+  template, not a configuration. Baking one in would be another file to keep
+  accurate, un-overridable without shadowing it, and another entry in the
+  contents manifest. `examples/bitcoin.conf` carries the teaching instead, and
+  `tests/test-config.sh` keeps it honest.
 - Ports: 8332 RPC, 8333 P2P, 28332/28333 ZMQ.
 - Ships `bitcoind` and `bitcoin-cli` only.
 - Provenance breadcrumbs at `/usr/local/share/bitcoind-provenance/`, plus a
@@ -784,6 +814,35 @@ real — what is left is getting the result published and signed.
       less recognisable of the two names, which is the opposite of helpful when
       the whole point of that comment is human recognition. Make it collect all
       names per fingerprint and emit `# TheCharlatan / sedited`.
+- [x] **Config and datadir handling — `tests/test-config.sh`, 2026-09-23.**
+      Seven assertions, ~7s, in `make test`. Written because two consumer-facing
+      defects were found by *asking how configuration is passed* and then
+      testing the answer rather than reading the Dockerfile.
+
+      The first: arguments replaced `CMD`, so any flag a consumer passed moved
+      the datadir off their volume, silently. Proven by mounting a host
+      directory, passing `-regtest`, and finding the directory **empty**
+      afterwards — the log looked perfectly healthy throughout, which is why an
+      assertion on the log would have missed it.
+
+      The second is subtler and shapes the whole design of the example config:
+      **Bitcoin Core does not fail on an unknown option in a config file.** It
+      logs `Ignoring unknown configuration value` and continues. So a stale
+      example would leave a user's settings quietly doing nothing. Booting it
+      proves it parses; only checking every option name against
+      `bitcoind -help` **from the image under test** proves it is still true.
+      Mutation-tested: a bogus *commented* option produced no runtime warning at
+      all and was caught solely by the name check.
+
+      Note `bitcoind -help` is **not exhaustive** — `-regtest` works, is used
+      throughout this repo, and appears only as an allowed value of `-chain`.
+      The test carries a short exception list; anything added to it needs
+      evidence, not a hunch.
+
+      Three mutants, all caught: flags back in `CMD` (3 assertions fired),
+      `/data` not created (the fresh-volume assertion), a bogus option in the
+      example (the name check).
+
 - [ ] **Negative tests for the remaining gates.** The threshold is now covered
       by `make test` (above). The rest are not, and each has a reproduction that
       was demonstrated once by hand and then lost: a `docker` shim whose

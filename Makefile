@@ -88,7 +88,7 @@ BUILD_DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>
 
 export SOURCE_DATE_EPOCH
 
-.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold print-buildkit-image print-version print-revision repro-digest repro-digest-write verify-repro verify-repro-published clean
+.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold print-buildkit-image print-image-ref print-version print-revision repro-digest repro-digest-write verify-repro verify-repro-published clean
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s$$'\t'
@@ -188,18 +188,22 @@ smoke: ## Prove the runtime base can actually run the binaries
 	@echo "--- regtest boot ---"
 	@# The old form backgrounded `docker run`, slept, and killed the client PID,
 	@# so it always exited 0 and could not fail. This runs the node with a
-	@# deadline and ASSERTS it reached "init message: Done loading". /data is used
-	@# because it is the declared VOLUME; /tmp is not guaranteed to exist in a
-	@# distroless image. The tmpfs is NOT incidental: /data does not exist in the
-	@# base, so a plain VOLUME comes up root-owned and bitcoind as 65532 cannot
-	@# write it — which is the consumer caveat in the README, and this target
-	@# proved it the first time it actually asserted.
+	@# deadline and ASSERTS it reached "init message: Done loading".
+	@#
+	@# No --entrypoint override and no -datadir/-printtoconsole here, deliberately.
+	@# --entrypoint DISCARDS the image's own arguments, so the old form tested a
+	@# bitcoind invocation this image never actually performs. Passing only the
+	@# extra flags exercises what a consumer gets: ENTRYPOINT supplies the datadir
+	@# and console logging, and user arguments append to them.
+	@#
+	@# The tmpfs is now for speed and isolation rather than necessity — /data ships
+	@# in the image owned by 65532, so a plain run works. tests/test-config.sh is
+	@# what proves that; this target should stay a fast liveness check.
 	@set -e; \
 	log=$$(mktemp); cid=smoke-$$$$; \
 	docker run --rm --name $$cid \
 	  --tmpfs /data:uid=65532,gid=65532,mode=0700 \
-	  --entrypoint /usr/local/bin/bitcoind \
-	  $(IMAGE):$(TAG) -regtest -datadir=/data -printtoconsole -connect=0 -listen=0 \
+	  $(IMAGE):$(TAG) -regtest -connect=0 -listen=0 \
 	  -dbcache=4 -maxmempool=5 > $$log 2>&1 & \
 	ok=0; \
 	for i in $$(seq 1 $(SMOKE_TIMEOUT)); do \
@@ -231,6 +235,9 @@ print-buildkit-image: ## Print the pinned buildkit image (used by release.yml)
 	@echo "$(BUILDKIT_IMAGE)"
 
 # release.yml compares these against the git tag it was launched from.
+print-image-ref: ## Print IMAGE:TAG (used by tests/)
+	@echo "$(IMAGE):$(TAG)"
+
 print-version: ## Print the upstream Bitcoin version
 	@echo "$(VERSION)"
 
@@ -255,10 +262,14 @@ verify-repro-published: ## Prove a PUBLISHED image is bit-for-bit this commit
 #
 # `test` is the aggregate: as the negative-test suite grows, add targets here and
 # CI picks them up without another workflow edit.
-test: test-threshold ## Run every test
+test: test-threshold test-config ## Run every test
 
 test-threshold: ## Prove BOTH threshold implementations agree and fail closed
 	tests/test-threshold.sh $(VERSION) $(TRIPLE)
+
+# Needs a built image, unlike test-threshold which builds what it needs.
+test-config: ## Prove config and the datadir reach the container, and the example is not stale
+	tests/test-config.sh $(IMAGE):$(TAG)
 
 # bitcoin/bitcoin unpacks the release tarball into /opt and puts it on PATH,
 # rather than installing into /usr/local/bin as we do. Verified against
