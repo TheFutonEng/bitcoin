@@ -119,7 +119,7 @@ RUN set -eux; \
 # no libbitcoinkernel.so. Nothing from libexec/ is needed either. If a future
 # release changes that, `make smoke` is what catches it.
 RUN set -eux; \
-    mkdir -p /out/bin /unpack; \
+    mkdir -p /out/bin /unpack /out/datadir; \
     tar -xzf "bitcoin-${BITCOIN_VERSION}-${TARGET_TRIPLE}.tar.gz" \
         --strip-components=1 -C /unpack; \
     for b in ${SHIP_BINARIES}; do \
@@ -160,7 +160,30 @@ COPY --from=verifier /out/bin/ /usr/local/bin/
 # Provenance breadcrumbs, readable from inside the image and by `docker cp`.
 COPY --from=verifier /out/accepted-signers.txt /out/upstream-digest.txt /usr/local/share/bitcoind-provenance/
 
-ENV BITCOIN_DATA=/data
+# An EMPTY directory, present in the image and owned by the runtime user.
+#
+# Docker seeds a fresh named or anonymous volume from whatever is at the mount
+# point in the image, ownership included. /data does not exist in the distroless
+# base, so before this every volume came up root-owned and `docker run` — with no
+# arguments and no mount at all, the first command anyone tries — died with
+# "Unable to open settings file /data/settings.json.tmp for writing".
+#
+# There is no shell here, so the usual fix of chown-ing in an entrypoint script
+# is not available, and adding one would undo the reason this image is
+# distroless. Creating the directory at build time is the only mechanism left.
+#
+# This does NOT help a bind mount: a host directory keeps its own ownership, so
+# `chown 65532:65532` on the host is still required and still documented. Under
+# Kubernetes it is also moot, because securityContext.fsGroup chowns the volume
+# at mount time. It buys the standalone-container case, which is a real one.
+COPY --from=verifier --chown=65532:65532 /out/datadir /data
+
+# BITCOIN_DATA is deliberately absent. It was here until 2026-09-23 and did
+# nothing: bitcoind does not read it. It is a convention from bitcoin/bitcoin,
+# whose ENTRYPOINT SCRIPT expands it into -datadir=. This image has no script by
+# design, so the variable was pure decoration that both READMEs listed as though
+# setting it would work. Verified inert by running with BITCOIN_DATA=/elsewhere:
+# the datadir did not move.
 
 # distroless nonroot
 USER 65532:65532
@@ -170,5 +193,18 @@ VOLUME ["/data"]
 # mainnet RPC / P2P / ZMQ block / ZMQ tx
 EXPOSE 8332 8333 28332 28333
 
-ENTRYPOINT ["/usr/local/bin/bitcoind"]
-CMD ["-datadir=/data", "-printtoconsole"]
+# The flags belong to ENTRYPOINT, not CMD, and the difference is not cosmetic.
+# Docker REPLACES CMD with user arguments but PREPENDS ENTRYPOINT to them. With
+# `CMD ["-datadir=/data", ...]`, any argument a consumer passed silently dropped
+# the datadir: `docker run -v vol:/data image -txindex=1` wrote the chain to
+# /home/nonroot/.bitcoin on the container layer, ignored the mounted volume, and
+# started normally. A node that looks healthy and loses its data on --rm.
+#
+# Both flags remain overridable, which was the obvious objection and was
+# measured: Bitcoin Core takes the LAST duplicate on the command line, so
+# `-datadir=/other` still wins, and `-noprinttoconsole` still silences it.
+ENTRYPOINT ["/usr/local/bin/bitcoind", "-datadir=/data", "-printtoconsole"]
+# Empty on purpose. The distroless base sets no CMD, so leaving this out would
+# work by accident; stating it means a future base that DOES set one cannot
+# append junk to our argv.
+CMD []
