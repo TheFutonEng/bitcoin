@@ -245,6 +245,23 @@ doing something clever, this catches it.
 
 ## What consumers need to know
 
+- **Tags are `<bitcoin version>-<image revision>`**, Debian's
+  `upstream_version-debian_revision` model: `31.1-1`. `VERSION` in the Makefile
+  is the upstream Bitcoin version and selects the tarball; `REVISION` names the
+  packaging and starts at 1 for each Bitcoin version. `TAG` is the two joined,
+  and `org.opencontainers.image.version` carries the same value — **which is the
+  point**: tags live in the registry and are not part of the artifact, so an
+  image pulled by digest would otherwise not say which revision it is. The two
+  live in the Makefile and the Dockerfile; `check-pins.sh` asserts they agree,
+  and `release.yml` refuses a tag that disagrees with the tree.
+
+  No bare version tags. `ghcr.io/thefutoneng/bitcoin:31.1` exists and is a
+  legitimate signed image, but it predates the scheme and is the only one.
+  Retagging it `31.1-0` was considered and rejected: it was built when the
+  version label was just `31.1`, so it would have been tagged `31.1-0` while
+  labelled `31.1`, permanently, because the label is inside a signed digest.
+  Starting at `31.1-1` keeps every tag's label matching its name, which is worth
+  more than closing a one-image gap in the numbering.
 - The published image is **`ghcr.io/thefutoneng/bitcoin`** — named `bitcoin`,
   not `bitcoind`, to match what every other Bitcoin Core container is called.
   The binary inside is still `bitcoind`, and the attestation predicate types
@@ -464,7 +481,12 @@ real — what is left is getting the result published and signed.
       with no key-pair signature behind it.
 
       The first run (`sha256:35c21e69…`) published keyless-only, because the
-      signing secrets did not exist yet. Re-running required moving the tag: a
+      signing secrets did not exist yet. **Decided 2026-09-23: it stays.** It is
+      untagged, superseded, and nothing points at it, so every path a consumer
+      actually takes leads to a newer revision. It remains pullable by digest
+      and verifies keyless — it is a legitimate image we built, signed one way
+      instead of two, not something to hide. Deleting it was considered purely
+      as tidiness; do not re-open it as though it were a security question. Re-running required moving the tag: a
       `workflow_dispatch` from `v31.1` would have executed the workflow file
       **as it existed at that ref**, which still read the wrong secret name and
       would have published keyless-only again, silently. Moving the tag to the

@@ -15,6 +15,15 @@
 #   4. Runtime image has no shell, no package manager, and runs as non-root.
 
 ARG BITCOIN_VERSION=31.1
+# The image revision for that Bitcoin version, Debian-style: same upstream
+# binaries, different packaging. The published tag and
+# org.opencontainers.image.version are both BITCOIN_VERSION-IMAGE_REVISION.
+#
+# This lives here AND as REVISION in the Makefile; check-pins.sh asserts they
+# agree, exactly as it does for MIN_GOOD_SIGS. The default matters: a direct
+# `docker build` that forgets the build arg still produces a correctly labelled
+# image rather than one claiming to be "31.1-".
+ARG IMAGE_REVISION=1
 ARG TARGET_TRIPLE=x86_64-linux-gnu
 # Invariant 4: pinned by digest, never by tag. This digest IS the `:nonroot`
 # variant of cc-debian12 as of 2026-09-12 — the name no longer says so, which
@@ -124,6 +133,11 @@ RUN set -eux; \
 FROM ${RUNTIME_BASE} AS runtime
 
 ARG BITCOIN_VERSION
+# Re-declared inside the stage for the same reason as RUNTIME_BASE below: a
+# global ARG is invisible inside a stage, so without this the version label
+# would silently expand to "31.1-" and every published image would be
+# mislabelled. That exact bug shipped once already.
+ARG IMAGE_REVISION
 # RUNTIME_BASE must be re-declared here. A global ARG above the first FROM is
 # visible to FROM instructions but NOT inside a stage, so without this the
 # base.name label silently expands to "" — which is what shipped in PR #2 and
@@ -135,7 +149,7 @@ ARG BUILD_DATE="1970-01-01T00:00:00Z"
 
 LABEL org.opencontainers.image.title="bitcoin" \
       org.opencontainers.image.description="Bitcoin Core daemon, built from signature-verified upstream release binaries" \
-      org.opencontainers.image.version="${BITCOIN_VERSION}" \
+      org.opencontainers.image.version="${BITCOIN_VERSION}-${IMAGE_REVISION}" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.source="${SOURCE_REPO}" \
       org.opencontainers.image.revision="${VCS_REF}" \
