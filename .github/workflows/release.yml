@@ -75,16 +75,41 @@ jobs:
                     "selecting the tag, not a branch."; exit 1 ;;
           esac
 
-      - name: Resolve version
+      # Tags are v<bitcoin version>-<image revision>, e.g. v31.1-1. The two halves
+      # mean different things and are used in different places: the Bitcoin
+      # version selects the release tarball and the signed sums, the revision
+      # only names the packaging. Splitting them here is what stops
+      # `make fetch-tarball` going looking for bitcoin-31.1-1-....tar.gz.
+      - name: Resolve version and revision
         id: v
         run: |
           set -euo pipefail
-          # Derived solely from the tag, which the guard above has already
-          # confirmed is a tag. One source of truth for what is being signed.
-          ver='${{ github.ref_name }}'; ver="${ver#v}"
-          [ -n "${ver}" ] || { echo "::error::empty version from ${{ github.ref }}"; exit 1; }
-          echo "version=${ver}" >> "$GITHUB_OUTPUT"
-          echo "publishing ${ver} from ${{ github.ref }}"
+          tag='${{ github.ref_name }}'
+          if [[ ! "${tag}" =~ ^v([0-9]+(\.[0-9]+)+)-([0-9]+)$ ]]; then
+            echo "::error::tag '${tag}' is not v<bitcoin-version>-<revision>, e.g. v31.1-1"
+            exit 1
+          fi
+          ver="${BASH_REMATCH[1]}"
+          rev="${BASH_REMATCH[3]}"
+
+          # The tag and the tree must agree. Nothing else catches this: the build
+          # would succeed, the image would be labelled from the Makefile and
+          # PUBLISHED under the tag, and the two would silently disagree. Since
+          # the tag is not inside the artifact, a consumer who pinned the digest
+          # would only ever see the label — so a mismatch is a mislabelled
+          # release, not a naming inconvenience.
+          mk_ver="$(make -s print-version)"
+          mk_rev="$(make -s print-revision)"
+          if [ "${ver}" != "${mk_ver}" ] || [ "${rev}" != "${mk_rev}" ]; then
+            echo "::error::tag ${tag} disagrees with the tree: Makefile says ${mk_ver}-${mk_rev}"
+            echo "::error::tag a commit whose VERSION and REVISION match, or fix them first"
+            exit 1
+          fi
+
+          echo "version=${ver}"   >> "$GITHUB_OUTPUT"
+          echo "revision=${rev}"  >> "$GITHUB_OUTPUT"
+          echo "tag=${ver}-${rev}" >> "$GITHUB_OUTPUT"
+          echo "publishing ${ver}-${rev} (bitcoin ${ver}, image revision ${rev}) from ${{ github.ref }}"
 
       # Pinned by version AND verified by hash. A repo that admits Bitcoin
       # binaries only on six builder signatures should not fetch the tool it
@@ -296,7 +321,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-${{ steps.v.outputs.version }}-predicates
+          name: release-${{ steps.v.outputs.tag }}-predicates
           path: |
             provenance.json
             sbom.spdx.json

@@ -17,7 +17,12 @@ image**. It says nothing about how you deploy or operate a node.
 > ghcr.io/thefutoneng/bitcoin@sha256:b36d45e23e2dd5499660b2d3b184d28069c14577a2330334de6ad186d2459fd2
 > ```
 >
-> Pin that digest. The tag moves; the digest does not.
+> Pin that digest.
+>
+> That image predates the `<bitcoin version>-<image revision>` tagging scheme
+> described under [Versioning](#versioning) and is the only one published under
+> a bare version tag. Later releases are tagged `31.1-1`, `31.1-2` and so on,
+> each immutable.
 
 ## Why this exists
 
@@ -134,6 +139,54 @@ That target overrides `BIN_PATH` to `/opt/bitcoin-<version>/bin`, because
 rather than installing into `/usr/local/bin`.
 
 Run `make help` for the full target list.
+
+## Versioning
+
+Tags are `<bitcoin version>-<image revision>`:
+
+```
+ghcr.io/thefutoneng/bitcoin:31.1-1
+                            ^^^^ ^
+                            |    image revision
+                            Bitcoin Core version
+```
+
+This is Debian's `upstream_version-debian_revision` model, for the same reason:
+the payload is upstream's and the image around it is ours, and the two change on
+unrelated schedules. A base image bump or a Dockerfile fix produces a genuinely
+different artifact while shipping byte-identical Bitcoin Core binaries, and that
+needs a name.
+
+- **The revision starts at 1** for each Bitcoin version and increments when the
+  published image changes for a reason that is not a new Bitcoin release.
+- **It resets to 1** when the Bitcoin version changes.
+- **Documentation and CI changes publish nothing**, so they do not bump it. A
+  rebuild of an unchanged commit produces a bit-identical image, so there is
+  never anything to publish for that either — see *Reproducible builds* below.
+
+The same value is in the image as `org.opencontainers.image.version`, so an
+image pulled by digest still says which revision it is. Tags live in the
+registry and are not part of the artifact; the label is what survives a
+`docker pull` by digest, which is what this README tells you to do anyway.
+
+**Bare version tags are not published.** There is no `:31.1` being maintained —
+it would be ambiguous the moment the image changes without the binaries
+changing, which is exactly what the revision exists to express. Pin a digest for
+anything real; use `31.1-1` when you want a name.
+
+### The one exception, stated plainly
+
+`ghcr.io/thefutoneng/bitcoin:31.1` exists. It was published on 2026-09-19,
+before this scheme, and it is a legitimate signed image — the verification steps
+below all work against it. It will not be updated and nothing else will be
+published under a bare version tag.
+
+The scheme deliberately starts at `31.1-1` rather than retroactively calling
+that image `31.1-0`. Retagging it was the obvious move and was rejected: it was
+built when the version label was just `31.1`, so it would have ended up tagged
+`31.1-0` while labelled `31.1` — permanently, since the label is baked into a
+signed digest. Every tag published under this scheme has a label that matches
+it, and that is worth more than closing a one-image gap in the numbering.
 
 ## Using the image
 

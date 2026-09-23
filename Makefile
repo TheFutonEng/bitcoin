@@ -1,6 +1,22 @@
 SHELL := /usr/bin/env bash
 
+# The UPSTREAM Bitcoin Core version. This selects the release tarball and the
+# signed sums; it is not the image's version. See REVISION.
 VERSION       ?= 31.1
+# The image revision for that Bitcoin version — the Debian
+# `upstream_version-debian_revision` model. Same binaries, different packaging.
+#
+# Bump this whenever the published image changes for a reason that is NOT a new
+# Bitcoin release: a base image bump, a Dockerfile change, a change to which
+# binaries ship. Reset it to 1 when VERSION changes. Docs- or CI-only changes
+# publish nothing, so they do not bump it. A rebuild of an unchanged commit
+# produces an identical image (`make verify-repro`), so there is never anything
+# to publish for that either.
+#
+# Starts at 1, not 0, which is what Debian does and what `31.1-1` should mean:
+# the first packaging of 31.1. Keep in sync with ARG IMAGE_REVISION in the
+# Dockerfile — check-pins.sh asserts it, the same way it does MIN_GOOD_SIGS.
+REVISION      ?= 1
 TRIPLE        ?= x86_64-linux-gnu
 PLATFORM      ?= linux/amd64
 # GHCR: lives with the repo, so the published image is the archive, and CI
@@ -13,7 +29,10 @@ REGISTRY      ?= ghcr.io/thefutoneng
 # payload describing the daemon, not the image, and changing a predicate type
 # after publishing breaks verification for everything already signed.
 IMAGE         ?= $(REGISTRY)/bitcoin
-TAG           ?= $(VERSION)
+# The published tag is VERSION-REVISION, never the bare Bitcoin version. A bare
+# `:31.1` would be ambiguous the moment the image changes without the binaries
+# changing, which is precisely what REVISION exists to express.
+TAG           ?= $(VERSION)-$(REVISION)
 # Pinned by digest (invariant 4). Keep in sync with the ARG in the Dockerfile.
 RUNTIME_BASE  ?= gcr.io/distroless/cc-debian12@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 MIN_GOOD_SIGS ?= 6
@@ -69,7 +88,7 @@ BUILD_DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>
 
 export SOURCE_DATE_EPOCH
 
-.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold print-buildkit-image repro-digest repro-digest-write verify-repro verify-repro-published clean
+.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold print-buildkit-image print-version print-revision repro-digest repro-digest-write verify-repro verify-repro-published clean
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s$$'\t'
@@ -105,6 +124,7 @@ build: verify ## Build the image (hermetic — no network in the build)
 	  --platform $(PLATFORM) \
 	  --network=none \
 	  --build-arg BITCOIN_VERSION=$(VERSION) \
+	  --build-arg IMAGE_REVISION=$(REVISION) \
 	  --build-arg TARGET_TRIPLE=$(TRIPLE) \
 	  --build-arg RUNTIME_BASE=$(RUNTIME_BASE) \
 	  --build-arg MIN_GOOD_SIGS=$(MIN_GOOD_SIGS) \
@@ -149,6 +169,7 @@ push: ## Build and push with full provenance + SBOM attestations
 	  --platform $(PLATFORM) \
 	  --network=none \
 	  --build-arg BITCOIN_VERSION=$(VERSION) \
+	  --build-arg IMAGE_REVISION=$(REVISION) \
 	  --build-arg TARGET_TRIPLE=$(TRIPLE) \
 	  --build-arg RUNTIME_BASE=$(RUNTIME_BASE) \
 	  --build-arg MIN_GOOD_SIGS=$(MIN_GOOD_SIGS) \
@@ -208,6 +229,13 @@ verify-contents: ## Prove EVERY file in the image is accounted for, not just the
 # scripts/verify-reproducible.sh before repeating either claim.
 print-buildkit-image: ## Print the pinned buildkit image (used by release.yml)
 	@echo "$(BUILDKIT_IMAGE)"
+
+# release.yml compares these against the git tag it was launched from.
+print-version: ## Print the upstream Bitcoin version
+	@echo "$(VERSION)"
+
+print-revision: ## Print the image revision for that Bitcoin version
+	@echo "$(REVISION)"
 
 repro-digest: ## Print the image manifest digest THIS commit builds
 	scripts/verify-reproducible.sh --release

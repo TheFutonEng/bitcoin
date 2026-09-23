@@ -35,6 +35,14 @@ df_sigs="$(sed -n 's/^ARG MIN_GOOD_SIGS=\([0-9]\+\).*/\1/p' Dockerfile)"
 vs_sigs="$(sed -n 's/.*MIN_GOOD_SIGS:-\([0-9]\+\)}.*/\1/p' scripts/verify.sh)"
 cmp_vals "MIN_GOOD_SIGS" "${mk_sigs}" "${df_sigs}" "${vs_sigs}"
 
+# IMAGE_REVISION: Makefile default vs Dockerfile ARG. Drift here is invisible
+# until someone pulls: the image would be PUBLISHED under one revision and
+# LABELLED with another, and since the tag is not inside the artifact, the label
+# is the only thing a consumer who pinned the digest can read.
+mk_rev="$(sed -n 's/^REVISION[[:space:]]*?=[[:space:]]*\([0-9]\+\).*/\1/p' Makefile)"
+df_rev="$(sed -n 's/^ARG IMAGE_REVISION=\([0-9]\+\).*/\1/p' Dockerfile)"
+cmp_vals "IMAGE_REVISION" "${mk_rev}" "${df_rev}"
+
 # RUNTIME_BASE: Makefile default vs Dockerfile ARG
 mk_base="$(sed -n 's/^RUNTIME_BASE[[:space:]]*?=[[:space:]]*\(.*\)/\1/p' Makefile)"
 df_base="$(sed -n 's/^ARG RUNTIME_BASE=\(.*\)/\1/p' Dockerfile)"
