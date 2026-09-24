@@ -569,10 +569,29 @@ make verify-contents 1660 base + 2 verified + 2 generated = 1664, 0 UNACCOUNTED
 
 ### Do these next
 
-With the build working and every gate green, the remaining priority items are
-about publishing and proving. `verify-contents.sh` is the thing that makes this
-repo's guarantees stronger than what is available elsewhere, and it now runs for
-real — what is left is getting the result published and signed.
+**Read this before picking something up.** Publishing and proving are finished:
+v31.1-1 is out, signed both ways, fully attested, and reproducible from a second
+machine. What remains is in a deliberate order, and the order matters more than
+it looks.
+
+1. **arm64** (in *Everything else* below). Take this first. It is the last open
+   item that changes what the artifact *is* rather than what is proven about it,
+   and everything downstream inherits the decision. In particular it is
+   unmeasured for reproducibility as well as for function, because
+   `verify-reproducible.sh` pins `PLATFORM=linux/amd64`.
+2. **STIG/hardening evidence.** Take this *after* arm64, not before. The
+   evidence is scanner output against a specific image, so producing it and then
+   changing the architecture — or moving to a multi-arch index — invalidates it
+   and you do the work twice. That ordering is the whole reason arm64 goes
+   first, and it is not obvious from either item on its own.
+3. **Negative tests for the remaining gates.** Cheapest of the group, the
+   pattern is established in `tests/`, and the reproductions to codify are
+   already named.
+4. **Rebuild-from-published-image.** Closes the real operational gap: a
+   distroless CVE when upstream has withdrawn the release.
+
+Items 1 and 2 are sequenced. Items 3 and 4 are independent of everything and can
+be picked up at any point.
 
 - [x] **`verify-sig` now verifies all three predicates.** Done 2026-09-15. It
       checked only provenance while `attest` attached three, so the contents
@@ -856,12 +875,26 @@ real — what is left is getting the result published and signed.
 
 ### Everything else
 
-- [ ] **arm64.** `TARGET_TRIPLE=aarch64-linux-gnu` should work but is untested.
-      Decide multi-arch manifest vs. separate single-arch tags. The pinned
-      distroless digest is already a multi-arch index, so the base is not the
-      blocker. A `TARGETARCH`->triple mapping inside the Dockerfile
+- [ ] **arm64. Do this before the STIG pass** — see the ordering note at the top
+      of *Do these next*. It is the last open item that changes what the artifact
+      is, and scanner evidence produced against amd64 does not survive an
+      architecture change.
+
+      `TARGET_TRIPLE=aarch64-linux-gnu` should work but is untested. Decide
+      multi-arch manifest vs. separate single-arch tags. The pinned distroless
+      digest is already a multi-arch index, so the base is not the blocker. A
+      `TARGETARCH`->triple mapping inside the Dockerfile
       (`amd64`->`x86_64-linux-gnu`, `arm64`->`aarch64-linux-gnu`) is the
       conventional approach and lets buildx drive it rather than a make var.
+
+      **Reproducibility is unmeasured for it too**, which is easy to miss:
+      `scripts/verify-reproducible.sh` pins `PLATFORM=linux/amd64`, and
+      `reproducible-digest.txt` holds exactly one digest. Multi-arch means
+      either a digest per platform or a deliberate decision that the claim
+      covers amd64 only — and saying which is part of the work, not an
+      afterthought. The same applies to `tests/test-config.sh` and
+      `make smoke`, which run containers and therefore run on the host's
+      architecture.
 - [x] **Confirm what the tarball actually ships.** Answered 2026-09-12 by
       unpacking the real 31.1 amd64 tarball.
 
@@ -894,9 +927,15 @@ real — what is left is getting the result published and signed.
       carrying the digest in its `org.opencontainers.image.base.name` label is
       resolved and fully accounted for by `verify-contents.sh` with no `BASE=`
       override.
-- [ ] **STIG/hardening pass.** Distroless gets most of this for free, but the
-      scanner wants explicit evidence. This is why the repo exists — do not let
-      it slip behind the plumbing tasks.
+- [ ] **STIG/hardening pass. Do arm64 first** — see the ordering note at the top
+      of *Do these next*. The evidence is scanner output against a specific
+      image, so producing it and then changing the architecture, or moving to a
+      multi-arch index, means doing the work twice.
+
+      Distroless gets most of this for free, but the scanner wants explicit
+      evidence. This is why the repo exists — do not let it slip behind the
+      plumbing tasks. The plumbing is finished as of 2026-09-23, so "after the
+      plumbing" now means "after arm64", and nothing else.
 - [x] **Test that Dockerfile and verify.sh agree — done 2026-09-21.**
       `check-pins.sh` had covered the *values* since 2026-09-12; `make test`
       now covers the *logic*. `tests/test-threshold.sh` splits the real
