@@ -24,7 +24,6 @@ ARG BITCOIN_VERSION=31.1
 # `docker build` that forgets the build arg still produces a correctly labelled
 # image rather than one claiming to be "31.1-".
 ARG IMAGE_REVISION=1
-ARG TARGET_TRIPLE=x86_64-linux-gnu
 # Invariant 4: pinned by digest, never by tag. This digest IS the `:nonroot`
 # variant of cc-debian12 as of 2026-09-12 — the name no longer says so, which
 # is the cost of pinning. It is an OCI image index (amd64, arm64/v8, arm/v7,
@@ -37,16 +36,35 @@ ARG RUNTIME_BASE=gcr.io/distroless/cc-debian12@sha256:9dac0a79194e45a7da0158a9c6
 # would defeat the threshold check entirely, and the resulting image would look
 # perfectly legitimate. It was left on a floating tag until 2026-09-20 because
 # invariant 5 said "runtime base" and nobody re-read it against this line.
-# OCI index (amd64, arm64/v8, arm/v7), so multi-arch survives the pin.
+# OCI index (amd64, arm64/v8, arm/v7), so multi-arch survives the pin — though
+# see the --platform note on the stage below: only the BUILD host's variant is
+# ever used.
 ARG VERIFIER_BASE=debian@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
 # ---------------------------------------------------------------------------
 # Stage 1: verify + unpack
 # ---------------------------------------------------------------------------
-FROM ${VERIFIER_BASE} AS verifier
+#
+# Runs on the BUILD platform, not the target. Nothing this stage does is
+# architecture-specific — gpgv, sha256sum, tar and install produce the same
+# bytes whichever CPU runs them — so an arm64 image is verified by a native
+# gpgv on the build host rather than by one running under QEMU. That keeps the
+# gate that matters most off an emulator, and means cross-building needs no
+# binfmt at all. The TARGET's binaries are only ever copied, never executed.
+FROM --platform=${BUILDPLATFORM} ${VERIFIER_BASE} AS verifier
 
 ARG BITCOIN_VERSION
-ARG TARGET_TRIPLE
+# The target architecture selects the tarball. This is the ONLY place the
+# arch-to-triple mapping lives for the build, and it has to live here rather
+# than in a --build-arg: a single `buildx build --platform linux/amd64,linux/arm64`
+# cannot pass a different build arg to each platform, so a TARGET_TRIPLE arg
+# would have put the amd64 tarball into the arm64 image. It was an ARG until
+# 2026-09-25, when only one architecture was ever built.
+#
+# An unmapped architecture fails the build rather than falling back to a
+# default. Adding one means adding it here, confirming the tarball layout
+# (see the unpack note below), and giving it a reproducible digest.
+ARG TARGETARCH
 # Bitcoin Core release SHA256SUMS files typically carry 10+ builder signatures.
 # 6 matches the `--min-good-sigs 6` that bitcoin/bitcoin's CI passes to Core's
 # verify.py, so this build is no weaker than the widely used image. Raise it if
@@ -68,8 +86,13 @@ WORKDIR /stage
 # Staged upstream artifacts only. SHA256SUMS and its signature are committed;
 # the tarball is fetched by `make fetch` and gitignored. Nothing comes from
 # the network during the build itself.
+#
+# A glob, because the triple is only known inside a RUN. It picks up every
+# staged linux-gnu tarball; the digest check below selects the one for this
+# target and checks it against the signed sums, and the others never leave this
+# throwaway stage. If none is staged the COPY itself fails.
 COPY upstream/SHA256SUMS upstream/SHA256SUMS.asc ./
-COPY upstream/bitcoin-${BITCOIN_VERSION}-${TARGET_TRIPLE}.tar.gz ./
+COPY upstream/bitcoin-${BITCOIN_VERSION}-*-linux-gnu.tar.gz ./
 COPY keys/ ./keys/
 
 # --- signature threshold check -------------------------------------------
@@ -107,7 +130,16 @@ RUN set -eux; \
 
 # --- digest check ---------------------------------------------------------
 RUN set -eux; \
-    tarball="bitcoin-${BITCOIN_VERSION}-${TARGET_TRIPLE}.tar.gz"; \
+    case "${TARGETARCH}" in \
+      amd64) triple=x86_64-linux-gnu ;; \
+      arm64) triple=aarch64-linux-gnu ;; \
+      *) echo "FATAL: no tarball mapping for TARGETARCH='${TARGETARCH}'" >&2; exit 1 ;; \
+    esac; \
+    tarball="bitcoin-${BITCOIN_VERSION}-${triple}.tar.gz"; \
+    test -f "${tarball}" || { \
+      echo "FATAL: ${tarball} is not staged — run: make fetch-tarball PLATFORM=linux/${TARGETARCH}" >&2; \
+      exit 1; }; \
+    echo "${tarball}" > /stage/tarball-name.txt; \
     grep "  ${tarball}\$" SHA256SUMS > tarball.sha256; \
     test -s tarball.sha256; \
     sha256sum -c tarball.sha256; \
@@ -120,7 +152,7 @@ RUN set -eux; \
 # release changes that, `make smoke` is what catches it.
 RUN set -eux; \
     mkdir -p /out/bin /unpack /out/datadir; \
-    tar -xzf "bitcoin-${BITCOIN_VERSION}-${TARGET_TRIPLE}.tar.gz" \
+    tar -xzf "$(cat /stage/tarball-name.txt)" \
         --strip-components=1 -C /unpack; \
     for b in ${SHIP_BINARIES}; do \
       install -m 0755 "/unpack/bin/${b}" "/out/bin/${b}"; \

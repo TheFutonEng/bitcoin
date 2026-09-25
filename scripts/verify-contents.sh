@@ -29,6 +29,8 @@
 #
 # env:
 #   BASE=              override the base image ref (default: from the label)
+#   PLATFORM=          platform to inventory, e.g. linux/arm64 (default: the
+#                      image's own, read from the local copy)
 #   SHIP_BINARIES=     binaries expected from the tarball (default: bitcoind bitcoin-cli)
 #   UPSTREAM_DIR=      where the verified tarball lives (default: <repo>/upstream)
 #   MANIFEST=          write the JSON manifest here (default: <repo>/contents-manifest.json)
@@ -88,6 +90,20 @@ BASE="${BASE:-$(docker inspect --format \
   exit 1
 }
 
+# The image and its base must be inventoried for the SAME platform. The base
+# label names a multi-arch index, and `docker create` on an index picks the
+# HOST's variant — so an arm64 image checked on an amd64 box was compared
+# against amd64 distroless and every arch-specific file (libc, the dpkg status
+# files) came back MODIFIED. Found 2026-09-25 by running it, not by reading it.
+# It fails closed, which is the only reason it was noisy rather than dangerous.
+PLATFORM="${PLATFORM:-$(docker image inspect --format \
+  '{{.Os}}/{{.Architecture}}{{with .Variant}}/{{.}}{{end}}' "${IMAGE}" 2>/dev/null || true)}"
+[[ -n "${PLATFORM}" ]] || {
+  echo "cannot determine the platform of ${IMAGE}: it is not present locally." >&2
+  echo "Pull it, or pass PLATFORM=<os/arch> explicitly." >&2
+  exit 1
+}
+
 tmp="$(mktemp -d)"
 cids=()
 cleanup() {
@@ -104,7 +120,7 @@ inventory() {
   local cid
   # A dummy command keeps `docker create` happy on images with no CMD, such as
   # the distroless base. The container is never started.
-  cid="$(docker create "${image}" /nonexistent-never-run 2>/dev/null)" || {
+  cid="$(docker create --platform "${PLATFORM}" "${image}" /nonexistent-never-run 2>/dev/null)" || {
     echo "docker create failed for ${image}" >&2; return 1; }
   cids+=("${cid}")
   mkdir -p "${dir}"
@@ -149,6 +165,7 @@ inventory() {
   fi
 }
 
+echo ">> platform:             ${PLATFORM}"
 echo ">> inventorying image:  ${IMAGE}"
 inventory "${IMAGE}" "${tmp}/image.txt"
 echo ">> inventorying base:   ${BASE}"

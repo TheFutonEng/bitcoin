@@ -21,6 +21,9 @@
 #
 #   usage: scripts/verify-image.sh <image-ref> [version] [triple]
 #
+# env:
+#   PLATFORM=   which image to take out of a multi-arch index, e.g. linux/arm64
+#
 set -euo pipefail
 
 IMAGE="${1:?usage: verify-image.sh <image-ref> [version] [triple]}"
@@ -52,7 +55,10 @@ tar -xzf "${TARBALL}" --strip-components=1 -C "${tmp}/ref"
 echo ">> extracting binaries from ${IMAGE}"
 mkdir -p "${tmp}/img"
 # The image may have no shell, so copy out of a created-but-never-started container.
-cid="$(docker create "${IMAGE}")"
+# --platform, when given, selects one image out of a multi-arch index. Without it
+# docker takes the host's variant, which for an index is not necessarily the
+# one you meant to check.
+cid="$(docker create ${PLATFORM:+--platform "${PLATFORM}"} "${IMAGE}")"
 for b in ${BINARIES}; do
   docker cp "${cid}:${BIN_PATH}/${b}" "${tmp}/img/${b}" 2>/dev/null \
     || { echo "  could not read ${BIN_PATH}/${b} from image — set BIN_PATH=" >&2; exit 1; }

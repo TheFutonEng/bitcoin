@@ -782,7 +782,7 @@ be picked up at any point.
       remote locally and https under `actions/checkout`, and `VCS_REF` used
       `git rev-parse --short`, whose abbreviation length auto-sizes from the
       repository's object count. Both are fixed. The remaining inputs —
-      `BITCOIN_VERSION`, `TARGET_TRIPLE`, `RUNTIME_BASE`, `MIN_GOOD_SIGS`,
+      `BITCOIN_VERSION`, `TARGETARCH`, `RUNTIME_BASE`, `MIN_GOOD_SIGS`,
       `BUILD_DATE` — are literals, a pinned digest, or derived from the commit
       timestamp, so they should be deterministic. **"Should be" is the problem:
       nothing tests it.** Do this as part of the item below, not separately.
@@ -880,21 +880,56 @@ be picked up at any point.
       is, and scanner evidence produced against amd64 does not survive an
       architecture change.
 
-      `TARGET_TRIPLE=aarch64-linux-gnu` should work but is untested. Decide
-      multi-arch manifest vs. separate single-arch tags. The pinned distroless
-      digest is already a multi-arch index, so the base is not the blocker. A
-      `TARGETARCH`->triple mapping inside the Dockerfile
-      (`amd64`->`x86_64-linux-gnu`, `arm64`->`aarch64-linux-gnu`) is the
-      conventional approach and lets buildx drive it rather than a make var.
+      **Decided 2026-09-25: one multi-arch OCI index, and the reproducibility
+      claim covers both platforms** — a digest per platform, not "amd64 only".
+      It ships as a new revision (`31.1-2`): same upstream binaries, different
+      packaging, which is exactly what `-<revision>` exists to name.
 
-      **Reproducibility is unmeasured for it too**, which is easy to miss:
-      `scripts/verify-reproducible.sh` pins `PLATFORM=linux/amd64`, and
-      `reproducible-digest.txt` holds exactly one digest. Multi-arch means
-      either a digest per platform or a deliberate decision that the claim
-      covers amd64 only — and saying which is part of the work, not an
-      afterthought. The same applies to `tests/test-config.sh` and
-      `make smoke`, which run containers and therefore run on the host's
-      architecture.
+      **Step 1, build support — done 2026-09-25**, measured on an amd64 host:
+
+      - The Dockerfile maps `TARGETARCH` to the triple; `TARGET_TRIPLE` is gone
+        as a build arg. It had to go: one `--platform a,b` build cannot pass a
+        different build arg per platform. An unmapped arch fails the build.
+        The Makefile derives `TRIPLE` from `PLATFORM` and rejects `TRIPLE=` on
+        the command line. The table lives in four files; `check-pins.sh`
+        asserts they agree, because swapping one entry was tried and the build
+        **succeeded** with amd64 binaries in an arm64 image.
+      - The verifier stage runs on `$BUILDPLATFORM`. gpgv never runs under
+        emulation, and cross-building needs no binfmt at all — this host has
+        none registered for aarch64 and builds arm64 fine.
+      - **The amd64 canonical digest did not move** (`75d0d79b…`), so the
+        refactor is behaviour-neutral for everything already published.
+      - arm64: deterministic across two builds; `verify-image` MATCH
+        (`bitcoind 1b279e03…`, `bitcoin-cli 815c0969…`); `verify-contents`
+        1659 base + 2 + 2 = **1663**, zero unaccounted. One fewer than amd64
+        because distroless ships `libmvec.so.1` on x86_64 only — explained,
+        not just observed. Threshold suite 35/35 on both triples.
+      - `verify-contents.sh` compared an arm64 image against the **amd64**
+        base until this change — `docker create` on an index takes the host's
+        variant — and flagged every arch-specific file MODIFIED. It now
+        inventories image and base for one platform, from `PLATFORM=` or the
+        image itself. `verify-image.sh` takes `PLATFORM=` too.
+      - The arm64 tarball links only glibc and has no `lib/`, same as amd64.
+
+      **Remaining, in order:**
+
+      2. **CI.** A native `ubuntu-24.04-arm` job for `smoke`, `test-config` and
+         `verify-image`/`verify-contents` — the steps that execute binaries
+         and cannot run on this host. Cache the arm64 tarball alongside amd64.
+      3. **Reproducibility per platform.** `reproducible-digest.txt` gains an
+         arm64 digest; `verify-repro` checks both; `--against` compares each
+         platform's manifest in the published index rather than taking the
+         first non-attestation entry it finds.
+      4. **Release.** `make push` builds `linux/amd64,linux/arm64` into one
+         index. Re-verification must pull each platform **by digest** from the
+         pushed index. The current "Re-verify the PUSHED image" step has never
+         read the registry: `make build` left the same tag in the local store,
+         so `docker create` used the local copy. v31.1-1 is still sound —
+         `verify-repro-published` did read the registry, and matched — but
+         that step claims more than it does, and fixing it is part of this.
+         Contents manifests and SBOMs are per platform.
+      5. **Docs.** README consumer section, and the `31.1-2` release itself.
+
 - [x] **Confirm what the tarball actually ships.** Answered 2026-09-12 by
       unpacking the real 31.1 amd64 tarball.
 

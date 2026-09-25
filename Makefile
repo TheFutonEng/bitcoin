@@ -17,8 +17,19 @@ VERSION       ?= 31.1
 # the first packaging of 31.1. Keep in sync with ARG IMAGE_REVISION in the
 # Dockerfile — check-pins.sh asserts it, the same way it does MIN_GOOD_SIGS.
 REVISION      ?= 1
-TRIPLE        ?= x86_64-linux-gnu
+# PLATFORM selects the architecture; TRIPLE follows from it and is not meant to
+# be set on its own. The Dockerfile makes the same mapping from TARGETARCH — it
+# has to, because one multi-platform build cannot take a per-platform build arg
+# — and a TRIPLE that disagreed with PLATFORM would have the host scripts verify
+# one tarball while the build shipped another. Keep this table and the one in
+# the Dockerfile's digest-check step identical.
 PLATFORM      ?= linux/amd64
+TRIPLE_linux/amd64 := x86_64-linux-gnu
+TRIPLE_linux/arm64 := aarch64-linux-gnu
+ifeq ($(origin TRIPLE),command line)
+$(error TRIPLE is derived from PLATFORM — pass PLATFORM=linux/arm64 instead)
+endif
+TRIPLE        := $(or $(TRIPLE_$(PLATFORM)),$(error no tarball triple for PLATFORM=$(PLATFORM)))
 # GHCR: lives with the repo, so the published image is the archive, and CI
 # authenticates with the built-in GITHUB_TOKEN rather than a stored credential.
 REGISTRY      ?= ghcr.io/thefutoneng
@@ -125,7 +136,6 @@ build: verify ## Build the image (hermetic — no network in the build)
 	  --network=none \
 	  --build-arg BITCOIN_VERSION=$(VERSION) \
 	  --build-arg IMAGE_REVISION=$(REVISION) \
-	  --build-arg TARGET_TRIPLE=$(TRIPLE) \
 	  --build-arg RUNTIME_BASE=$(RUNTIME_BASE) \
 	  --build-arg MIN_GOOD_SIGS=$(MIN_GOOD_SIGS) \
 	  --build-arg SOURCE_REPO=$(SOURCE_REPO) \
@@ -170,7 +180,6 @@ push: ## Build and push with full provenance + SBOM attestations
 	  --network=none \
 	  --build-arg BITCOIN_VERSION=$(VERSION) \
 	  --build-arg IMAGE_REVISION=$(REVISION) \
-	  --build-arg TARGET_TRIPLE=$(TRIPLE) \
 	  --build-arg RUNTIME_BASE=$(RUNTIME_BASE) \
 	  --build-arg MIN_GOOD_SIGS=$(MIN_GOOD_SIGS) \
 	  --build-arg SOURCE_REPO=$(SOURCE_REPO) \
@@ -222,10 +231,10 @@ smoke: ## Prove the runtime base can actually run the binaries
 	fi
 
 verify-image: ## Prove the image's binaries are the verified upstream bytes (works on any image)
-	scripts/verify-image.sh $(IMAGE):$(TAG) $(VERSION) $(TRIPLE)
+	PLATFORM=$(PLATFORM) scripts/verify-image.sh $(IMAGE):$(TAG) $(VERSION) $(TRIPLE)
 
 verify-contents: ## Prove EVERY file in the image is accounted for, not just the binaries
-	scripts/verify-contents.sh $(IMAGE):$(TAG) $(VERSION) $(TRIPLE)
+	PLATFORM=$(PLATFORM) scripts/verify-contents.sh $(IMAGE):$(TAG) $(VERSION) $(TRIPLE)
 
 # Reproducibility. Note carefully what is and is not claimed: the IMAGE MANIFEST
 # is reproducible, the published OCI INDEX is not, because the attestations it

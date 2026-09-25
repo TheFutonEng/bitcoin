@@ -43,6 +43,22 @@ mk_rev="$(sed -n 's/^REVISION[[:space:]]*?=[[:space:]]*\([0-9]\+\).*/\1/p' Makef
 df_rev="$(sed -n 's/^ARG IMAGE_REVISION=\([0-9]\+\).*/\1/p' Dockerfile)"
 cmp_vals "IMAGE_REVISION" "${mk_rev}" "${df_rev}"
 
+# Architecture -> tarball triple. The Dockerfile has to map TARGETARCH itself,
+# because one multi-platform build cannot take a per-platform build arg, and the
+# host tooling needs the same mapping to name the tarball it verifies. Drift is
+# the worst kind: swapping the Dockerfile's arm64 entry to x86_64 was tried on
+# 2026-09-25 and the build SUCCEEDED, shipping amd64 binaries in an image
+# labelled arm64. verify-image and verify-contents both caught it, but only after
+# a build; this catches it before one. Compared as sorted "arch=triple" lists so
+# an entry added in one file and not the others is drift too.
+arch_map() { sort | paste -sd' ' -; }
+df_arch="$(sed -n 's/^[[:space:]]*\([a-z0-9]*\)) triple=\([a-z0-9_-]*\) ;;.*/\1=\2/p' Dockerfile | arch_map)"
+mk_arch="$(sed -n 's#^TRIPLE_linux/\([a-z0-9]*\)[[:space:]]*:=[[:space:]]*\([a-z0-9_-]*\).*#\1=\2#p' Makefile | arch_map)"
+vr_arch="$(sed -n 's#^[[:space:]]*linux/\([a-z0-9]*\)) TRIPLE=\([a-z0-9_-]*\) ;;.*#\1=\2#p' scripts/verify-reproducible.sh | arch_map)"
+tt_arch="$(sed -n 's#^[[:space:]]*\([a-z0-9_-]*\))[[:space:]]*PLATFORM=linux/\([a-z0-9]*\) ;;.*#\2=\1#p' tests/test-threshold.sh | arch_map)"
+[[ -n "${df_arch}" ]] || { echo "  DRIFT ARCH_TRIPLES       could not read the Dockerfile's table"; fail=1; }
+cmp_vals "ARCH_TRIPLES" "${df_arch}" "${mk_arch}" "${vr_arch}" "${tt_arch}"
+
 # RUNTIME_BASE: Makefile default vs Dockerfile ARG
 mk_base="$(sed -n 's/^RUNTIME_BASE[[:space:]]*?=[[:space:]]*\(.*\)/\1/p' Makefile)"
 df_base="$(sed -n 's/^ARG RUNTIME_BASE=\(.*\)/\1/p' Dockerfile)"

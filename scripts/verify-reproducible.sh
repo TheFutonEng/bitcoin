@@ -52,8 +52,15 @@
 set -euo pipefail
 
 VERSION="${VERSION:-31.1}"
-TRIPLE="${TRIPLE:-x86_64-linux-gnu}"
 PLATFORM="${PLATFORM:-linux/amd64}"
+# Derived, never passed: the Dockerfile picks the tarball from TARGETARCH, so
+# this only has to name the same file for the precondition check. Keep in step
+# with the table in the Makefile and the Dockerfile.
+case "${PLATFORM}" in
+  linux/amd64) TRIPLE=x86_64-linux-gnu ;;
+  linux/arm64) TRIPLE=aarch64-linux-gnu ;;
+  *) echo "no tarball triple for PLATFORM=${PLATFORM}" >&2; exit 2 ;;
+esac
 MIN_GOOD_SIGS="${MIN_GOOD_SIGS:-6}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -193,7 +200,6 @@ docker buildx --builder "${BUILDER}" build \
   --network=none \
   --build-arg BITCOIN_VERSION="${VERSION}" \
   --build-arg IMAGE_REVISION="${REVISION}" \
-  --build-arg TARGET_TRIPLE="${TRIPLE}" \
   --build-arg RUNTIME_BASE="${RUNTIME_BASE}" \
   --build-arg MIN_GOOD_SIGS="${MIN_GOOD_SIGS}" \
   --build-arg SOURCE_REPO="${source_repo}" \
