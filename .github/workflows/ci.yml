@@ -41,7 +41,6 @@ concurrency:
 
 env:
   VERSION: "31.1"
-  TRIPLE: x86_64-linux-gnu
 
 jobs:
   # Did anything other than markdown change? Everything downstream gates on this.
@@ -149,40 +148,69 @@ jobs:
   # The real chain. Downloads only the tarball; SHA256SUMS and its signature
   # come from git, so this proves the committed trust anchor admits the bytes
   # upstream is actually serving.
+  #
+  # Once per platform the published index carries, each on a NATIVE runner.
+  # Native, not QEMU, because smoke and test-config EXECUTE the binaries: an
+  # emulated pass says the binary runs under an emulator, which is not the
+  # claim. The build itself needs no emulation either way — the verifier stage
+  # runs on the build platform — but running each leg where its binaries are
+  # real is what makes every step below mean the same thing on both.
+  #
+  # It also sharpens the reproducibility check. reproducible-digest.txt is
+  # written on an amd64 dev box, which CROSS-builds arm64; the arm64 leg then
+  # rebuilds it natively. Two machines of different architectures agreeing on
+  # the bytes is a stronger claim than two amd64 machines agreeing.
   verify-and-build:
-    name: verify + build + prove
+    name: verify + build + prove (${{ matrix.arch }})
     needs: changes
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
+    strategy:
+      # One architecture failing must not cancel the other: which legs fail is
+      # itself the diagnosis.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     # NOTE: the job is not gated with `if:` — a skipped job reports a "skipped"
     # conclusion, and how branch protection treats that is not something to bet
     # the merge gate on. The job always runs and always reports; the steps are
     # what get skipped.
     env:
       CODE: ${{ needs.changes.outputs.code }}
+      # Every make target and script reads this. The tarball triple is derived
+      # from it by the Makefile, never set here — see print-triple below.
+      PLATFORM: linux/${{ matrix.arch }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Key the cache on the expected tarball hash from the committed sums, so
-      # it invalidates exactly when the vendored version changes.
+      # it invalidates exactly when the vendored version changes. The file name
+      # comes from make, so this workflow never holds its own copy of the arch
+      # table that check-pins keeps consistent.
       - name: Compute tarball cache key
         id: tb
         if: env.CODE == 'true'
         run: |
-          sha=$(grep "  bitcoin-${VERSION}-${TRIPLE}.tar.gz\$" upstream/SHA256SUMS | cut -d' ' -f1)
+          file="bitcoin-${VERSION}-$(make -s print-triple).tar.gz"
+          sha=$(grep "  ${file}\$" upstream/SHA256SUMS | cut -d' ' -f1)
           test -n "$sha"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: env.CODE == 'true'
         with:
-          path: upstream/bitcoin-${{ env.VERSION }}-${{ env.TRIPLE }}.tar.gz
+          path: upstream/${{ steps.tb.outputs.file }}
           key: tarball-${{ steps.tb.outputs.sha }}
 
       - name: Fetch tarball if not cached
         if: env.CODE == 'true'
         run: |
-          f="upstream/bitcoin-${VERSION}-${TRIPLE}.tar.gz"
+          f="upstream/${{ steps.tb.outputs.file }}"
           if [ -f "$f" ]; then echo "cache hit"; else make fetch-tarball; fi
 
       # Threshold + digest against the COMMITTED sums and allowlist.
@@ -253,7 +281,7 @@ jobs:
         if: always() && env.CODE == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: contents-manifest
+          name: contents-manifest-${{ matrix.arch }}
           path: contents-manifest.json
           if-no-files-found: warn
           # This repo is public, so the artifact is downloadable by anyone. That

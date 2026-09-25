@@ -419,10 +419,13 @@ published index — two machines, same bytes.
 rewriting, so its files carry the wall-clock time of that build. The check says
 so rather than passing quietly.
 
-On every pull request CI also asserts that a GitHub runner builds the same image
-as the digest committed in `reproducible-digest.txt`, which was generated on a
-different machine. Verified by hand across two buildkit versions (v0.29.0 and
-v0.32.2), two drivers, and via both an OCI export and a registry push.
+On every pull request CI also asserts that GitHub runners build the same images
+as the digests committed in `reproducible-digest.txt` — one per platform,
+linux/amd64 and linux/arm64, each checked on a native runner of that
+architecture. The file is generated on a different machine, an amd64 box that
+cross-builds arm64, so the arm64 check is two different CPU architectures
+agreeing on the bytes. Verified by hand across two buildkit versions (v0.29.0
+and v0.32.2), two drivers, and via both an OCI export and a registry push.
 
 One thing the check has to do, and it is not obvious: **it builds with
 `--no-cache`.** BuildKit's cache key does not include `SOURCE_DATE_EPOCH`, so a
@@ -439,9 +442,10 @@ what happened on the v31.1-1 release, and is why the flag is there.
   keyring, injected pin drift, an unwritable datadir, an unreadable image, a
   swapped image at the same tag — have each been shown to fail closed by hand,
   but those proofs are ad hoc rather than runnable, so nothing re-checks them.
-- **arm64 is untested**, including for reproducibility — `make verify-repro`
-  pins linux/amd64. The pinned base is already a multi-arch index, so the base is
-  not the blocker.
+- **arm64 is built and tested but not yet published.** CI runs the whole chain
+  on a native arm64 runner — smoke, config tests, binary and contents
+  verification, and the reproducible digest — but every published tag so far is
+  amd64 only. The first multi-arch release will be `31.1-2`.
 - **The published *index* digest is not reproducible, and cannot be.** The image
   inside it is. See "Reproducible builds" above; the distinction is real and the
   index digest is the one you pin.

@@ -1,19 +1,20 @@
-# Reproducible image manifest digest for a CANONICAL build of this tree.
+# Reproducible image manifest digests for a CANONICAL build of this tree, one
+# per platform in the published index.
 #
-# Regenerate with:  make repro-digest-write
-# Verified by:      make verify-repro   (runs in CI on every pull request)
+# Regenerate with:  make repro-digest-write   (builds every platform)
+# Verified by:      make verify-repro         (CI runs it for each platform on a
+#                                              NATIVE runner, on every PR)
 #
-# This is NOT the digest consumers pin. Consumers pin the published OCI index,
+# These are NOT the digest consumers pin. Consumers pin the published OCI index,
 # which also contains attestations and is deliberately not reproducible — see
-# the header of scripts/verify-reproducible.sh. This is the digest of the image
-# INSIDE that index, built with placeholder VCS_REF/BUILD_DATE so the value does
-# not change on every commit.
+# the header of scripts/verify-reproducible.sh. These are the digests of the
+# images INSIDE that index, built with placeholder VCS_REF/BUILD_DATE so the
+# values do not change on every commit.
 #
-# It changes when the Dockerfile, the verified tarball, the accepted signer list
-# or the pinned base image changes. Any other change to it is a reproducibility
-# regression, and CI is what says so.
+# They change when the Dockerfile, the verified tarballs, the accepted signer
+# list or the pinned base image changes. Any other change to them is a
+# reproducibility regression, and CI is what says so.
 #
 # version:  31.1
-# triple:   x86_64-linux-gnu
-# platform: linux/amd64
-sha256:75d0d79bcc198175fead0fd68905ad5bc26dc40814e43a45745e6e0e5fb479a9
+linux/amd64 sha256:75d0d79bcc198175fead0fd68905ad5bc26dc40814e43a45745e6e0e5fb479a9
+linux/arm64 sha256:3315fa74da0cd7001b971f1be4f0ef486708a9c2227c6a4a078717b9b2841c4d

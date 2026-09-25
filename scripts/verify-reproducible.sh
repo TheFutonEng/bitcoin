@@ -45,9 +45,12 @@
 #
 #   usage:
 #     scripts/verify-reproducible.sh                 # canonical build vs the committed digest
-#     scripts/verify-reproducible.sh --write         # update that file (a reviewed commit)
+#     scripts/verify-reproducible.sh --write         # update that file, EVERY platform (a reviewed commit)
 #     scripts/verify-reproducible.sh --release       # print the digest for THIS commit
 #     scripts/verify-reproducible.sh --against REF   # compare THIS commit to a published image
+#
+#   PLATFORM= (default linux/amd64) selects which platform the other three modes
+#   build and check. --write ignores it and builds all of ALL_PLATFORMS.
 #
 set -euo pipefail
 
@@ -56,11 +59,18 @@ PLATFORM="${PLATFORM:-linux/amd64}"
 # Derived, never passed: the Dockerfile picks the tarball from TARGETARCH, so
 # this only has to name the same file for the precondition check. Keep in step
 # with the table in the Makefile and the Dockerfile.
-case "${PLATFORM}" in
-  linux/amd64) TRIPLE=x86_64-linux-gnu ;;
-  linux/arm64) TRIPLE=aarch64-linux-gnu ;;
-  *) echo "no tarball triple for PLATFORM=${PLATFORM}" >&2; exit 2 ;;
-esac
+set_triple() {
+  case "$1" in
+    linux/amd64) TRIPLE=x86_64-linux-gnu ;;
+    linux/arm64) TRIPLE=aarch64-linux-gnu ;;
+    *) echo "no tarball triple for PLATFORM=$1" >&2; exit 2 ;;
+  esac
+}
+set_triple "${PLATFORM}"
+# Every platform the published index carries, and therefore every platform the
+# reproducibility claim covers. --write records one digest per entry. Adding a
+# platform here without a mapping above fails at once rather than skipping it.
+ALL_PLATFORMS="linux/amd64 linux/arm64"
 MIN_GOOD_SIGS="${MIN_GOOD_SIGS:-6}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -106,12 +116,22 @@ else
   label="commit ${vcs_ref}"
 fi
 
-TARBALL="${REPO_ROOT}/upstream/bitcoin-${VERSION}-${TRIPLE}.tar.gz"
-[[ -f "${TARBALL}" ]] || {
-  echo "missing upstream/$(basename "${TARBALL}")" >&2
-  echo "run: make fetch-tarball VERSION=${VERSION}" >&2
-  exit 1
+require_tarball() {
+  set_triple "$1"
+  local tarball="${REPO_ROOT}/upstream/bitcoin-${VERSION}-${TRIPLE}.tar.gz"
+  [[ -f "${tarball}" ]] || {
+    echo "missing upstream/$(basename "${tarball}")" >&2
+    echo "run: make fetch-tarball VERSION=${VERSION} PLATFORM=$1" >&2
+    exit 1
+  }
 }
+# Check every tarball this run needs BEFORE building anything, so --write does
+# not spend a build on amd64 and then die on a missing arm64 tarball.
+if [[ "${mode}" == "write" ]]; then
+  for p in ${ALL_PLATFORMS}; do require_tarball "${p}"; done
+else
+  require_tarball "${PLATFORM}"
+fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
@@ -137,7 +157,14 @@ if ! docker buildx inspect "${BUILDER}" >/dev/null 2>&1; then
     --driver-opt "image=${BUILDKIT_IMAGE}" >/dev/null
 fi
 
-echo "building ${label} — platform ${PLATFORM}, source-date-epoch ${epoch}"
+# Builds ONE platform and sets ${digest} to its image manifest digest. One build
+# per platform rather than one `--platform a,b` build: what is reproducible, and
+# what gets compared, is each platform's image manifest, and a single-platform
+# build reports exactly that as containerimage.digest.
+build_digest() {
+local platform="$1"
+echo "building ${label} — platform ${platform}, source-date-epoch ${epoch}"
+rm -rf "${WORK}/oci" "${WORK}/meta.json"
 
 # Deliberately NOT --load and NOT --push.
 #
@@ -196,7 +223,7 @@ echo "building ${label} — platform ${PLATFORM}, source-date-epoch ${epoch}"
 # because its epoch never changes, and relying on that is how this got here.
 docker buildx --builder "${BUILDER}" build \
   --no-cache \
-  --platform "${PLATFORM}" \
+  --platform "${platform}" \
   --network=none \
   --build-arg BITCOIN_VERSION="${VERSION}" \
   --build-arg IMAGE_REVISION="${REVISION}" \
@@ -219,6 +246,11 @@ digest="$(sed -n 's/.*"containerimage.digest": *"\(sha256:[0-9a-f]\{64\}\)".*/\1
 [[ -n "${digest}" ]] || { echo "could not read containerimage.digest from build metadata" >&2; exit 1; }
 
 echo "image manifest digest: ${digest}"
+}
+
+if [[ "${mode}" != "write" ]]; then
+  build_digest "${PLATFORM}"
+fi
 
 case "${mode}" in
   release)
@@ -226,26 +258,31 @@ case "${mode}" in
     ;;
 
   write)
+    lines=""
+    for p in ${ALL_PLATFORMS}; do
+      build_digest "${p}"
+      lines+="${p} ${digest}"$'\n'
+    done
     cat > "${EXPECTED_FILE}" <<EOF
-# Reproducible image manifest digest for a CANONICAL build of this tree.
+# Reproducible image manifest digests for a CANONICAL build of this tree, one
+# per platform in the published index.
 #
-# Regenerate with:  make repro-digest-write
-# Verified by:      make verify-repro   (runs in CI on every pull request)
+# Regenerate with:  make repro-digest-write   (builds every platform)
+# Verified by:      make verify-repro         (CI runs it for each platform on a
+#                                              NATIVE runner, on every PR)
 #
-# This is NOT the digest consumers pin. Consumers pin the published OCI index,
+# These are NOT the digest consumers pin. Consumers pin the published OCI index,
 # which also contains attestations and is deliberately not reproducible — see
-# the header of scripts/verify-reproducible.sh. This is the digest of the image
-# INSIDE that index, built with placeholder VCS_REF/BUILD_DATE so the value does
-# not change on every commit.
+# the header of scripts/verify-reproducible.sh. These are the digests of the
+# images INSIDE that index, built with placeholder VCS_REF/BUILD_DATE so the
+# values do not change on every commit.
 #
-# It changes when the Dockerfile, the verified tarball, the accepted signer list
-# or the pinned base image changes. Any other change to it is a reproducibility
-# regression, and CI is what says so.
+# They change when the Dockerfile, the verified tarballs, the accepted signer
+# list or the pinned base image changes. Any other change to them is a
+# reproducibility regression, and CI is what says so.
 #
 # version:  ${VERSION}
-# triple:   ${TRIPLE}
-# platform: ${PLATFORM}
-${digest}
+${lines%$'\n'}
 EOF
     echo "wrote ${EXPECTED_FILE#"${REPO_ROOT}/"}"
     ;;
@@ -256,8 +293,14 @@ EOF
       echo "       create it with: make repro-digest-write" >&2
       exit 1
     }
-    expected="$(grep -oE '^sha256:[0-9a-f]{64}$' "${EXPECTED_FILE}" | head -1)"
-    [[ -n "${expected}" ]] || { echo "no digest found in ${EXPECTED_FILE}" >&2; exit 1; }
+    # Matched on the platform. A missing line for this platform is a failure,
+    # never a fallback to another platform's digest.
+    expected="$(awk -v p="${PLATFORM}" '$1 == p && $2 ~ /^sha256:[0-9a-f]+$/ {print $2}' "${EXPECTED_FILE}")"
+    [[ -n "${expected}" && "${expected}" != *$'\n'* ]] || {
+      echo "FATAL: expected exactly one digest for ${PLATFORM} in ${EXPECTED_FILE#"${REPO_ROOT}/"}" >&2
+      echo "       regenerate with: make repro-digest-write" >&2
+      exit 1
+    }
     echo "expected             : ${expected}"
     if [[ "${digest}" == "${expected}" ]]; then
       echo
@@ -278,13 +321,19 @@ EOF
 
   against)
     # The consumer-facing check: does the image inside a PUBLISHED index match
-    # what this commit builds? Attestation manifests carry platform
-    # unknown/unknown, which is how they are told apart from the real image.
-    echo "published reference  : ${against}"
+    # what this commit builds, for THIS platform? Selected by os/architecture.
+    # It used to take "the entry that is not an attestation" — attestations
+    # carry unknown/unknown — which found the one image in a single-platform
+    # index but would concatenate the digests of a multi-arch one.
+    echo "published reference  : ${against} (${PLATFORM})"
+    os="${PLATFORM%%/*}"; arch="${PLATFORM#*/}"
     published="$(docker buildx imagetools inspect "${against}" --format \
-      '{{range .Manifest.Manifests}}{{if ne .Platform.OS "unknown"}}{{.Digest}}{{end}}{{end}}' 2>/dev/null)"
-    [[ -n "${published}" ]] || {
-      echo "could not read an image manifest out of ${against}" >&2; exit 1; }
+      "{{range .Manifest.Manifests}}{{if and (eq .Platform.OS \"${os}\") (eq .Platform.Architecture \"${arch}\")}}{{.Digest}} {{end}}{{end}}" 2>/dev/null)"
+    published="${published% }"
+    [[ -n "${published}" && "${published}" != *" "* ]] || {
+      echo "could not read exactly one ${PLATFORM} image manifest out of ${against}" >&2
+      echo "  got: '${published}'" >&2
+      exit 1; }
     echo "published image      : ${published}"
     if [[ "${digest}" == "${published}" ]]; then
       echo

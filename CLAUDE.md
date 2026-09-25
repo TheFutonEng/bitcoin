@@ -576,9 +576,9 @@ it looks.
 
 1. **arm64** (in *Everything else* below). Take this first. It is the last open
    item that changes what the artifact *is* rather than what is proven about it,
-   and everything downstream inherits the decision. In particular it is
-   unmeasured for reproducibility as well as for function, because
-   `verify-reproducible.sh` pins `PLATFORM=linux/amd64`.
+   and everything downstream inherits the decision. Built, tested and
+   reproducible in CI as of 2026-09-25; what remains is the release — see the
+   arm64 item for the step list.
 2. **STIG/hardening evidence.** Take this *after* arm64, not before. The
    evidence is scanner output against a specific image, so producing it and then
    changing the architecture — or moving to a multi-arch index — invalidates it
@@ -799,8 +799,7 @@ be picked up at any point.
       **Largely answered 2026-09-22 by `make verify-repro`, which turns "should
       be deterministic" into a gate.** Anything environment-dependent that
       reaches the image now changes the digest and fails CI. What that check does
-      *not* cover, and what keeps this item open: it pins `PLATFORM` to
-      linux/amd64, so arm64 is unmeasured, and it deliberately fixes `VCS_REF`,
+      *not* cover, and what keeps this item open: it deliberately fixes `VCS_REF`,
       `BUILD_DATE` and `SOURCE_REPO` to placeholders rather than exercising the
       real ones. Those three are the inputs that were actually buggy before, so
       the gate covers everything except the category with the known history.
@@ -911,15 +910,34 @@ be picked up at any point.
         image itself. `verify-image.sh` takes `PLATFORM=` too.
       - The arm64 tarball links only glibc and has no `lib/`, same as amd64.
 
+      **Steps 2 and 3, CI and per-platform reproducibility — 2026-09-25.**
+      One PR, because they could not be separated: an arm64 CI leg running
+      `verify-repro` needs an arm64 expected digest.
+
+      - `verify-and-build` is a matrix over amd64 (`ubuntu-latest`) and arm64
+        (`ubuntu-24.04-arm`), each running the whole chain **natively** —
+        smoke and test-config execute binaries, and an emulated pass would
+        only prove the binary runs under an emulator. `fail-fast: false`, so
+        which leg failed is visible. The workflow gets the tarball name from
+        `make print-triple` rather than holding a fifth arch table.
+      - `reproducible-digest.txt` holds one `<platform> <digest>` line each.
+        `--write` builds every platform in `ALL_PLATFORMS`; compare checks
+        `$PLATFORM` and fails on a missing line rather than falling back.
+        amd64 stayed `75d0d79b…`; arm64 is `3315fa74…`.
+      - **The arm64 value is cross-built on an amd64 host and asserted on a
+        native arm64 runner** — two CPU architectures agreeing on the bytes,
+        which is a stronger claim than the amd64 one.
+      - `--against` now selects the published manifest by os/architecture. It
+        took "the entry that is not unknown/unknown", which is one image in a
+        single-platform index and a concatenation of several in a multi-arch
+        one. Checked against the real `31.1-1` index: amd64 yields
+        `bbd7da4f…`, arm64 yields nothing and fails.
+      - Every pinned image — both bases, buildkit, test-config's cleanup
+        image — was confirmed to be a multi-arch index including arm64 before
+        the arm64 runner could discover otherwise.
+
       **Remaining, in order:**
 
-      2. **CI.** A native `ubuntu-24.04-arm` job for `smoke`, `test-config` and
-         `verify-image`/`verify-contents` — the steps that execute binaries
-         and cannot run on this host. Cache the arm64 tarball alongside amd64.
-      3. **Reproducibility per platform.** `reproducible-digest.txt` gains an
-         arm64 digest; `verify-repro` checks both; `--against` compares each
-         platform's manifest in the published index rather than taking the
-         first non-attestation entry it finds.
       4. **Release.** `make push` builds `linux/amd64,linux/arm64` into one
          index. Re-verification must pull each platform **by digest** from the
          pushed index. The current "Re-verify the PUSHED image" step has never
