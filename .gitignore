@@ -8,6 +8,8 @@ upstream/*.tar.gz
 provenance.json
 contents-manifest.json
 sbom.spdx.json
+# Per-platform predicates for a multi-arch release (make verify-published).
+predicates/
 keys/trusted-fingerprints.txt.candidate
 
 # Private signing keys. cosign.pub is committed on purpose — consumers need it —

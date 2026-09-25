@@ -240,6 +240,7 @@ if (( n_mod || n_mis || n_un )); then
 fi
 
 # --- manifest -------------------------------------------------------------
+mkdir -p "$(dirname "${MANIFEST}")"
 {
   printf '{\n'
   printf '  "image": "%s",\n'  "${IMAGE}"

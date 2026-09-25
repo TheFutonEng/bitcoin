@@ -9,6 +9,11 @@
 #
 #   usage: scripts/verify.sh 31.1 [x86_64-linux-gnu]
 #
+# env:
+#   PROVENANCE_OUT=   where to write the provenance record (default:
+#                     <repo>/provenance.json). A multi-arch release writes one
+#                     per platform, since the tarball and its digest differ.
+#
 set -euo pipefail
 
 VERSION="${1:?usage: verify.sh <version> [triple]}"
@@ -20,6 +25,7 @@ MIN_GOOD_SIGS="${MIN_GOOD_SIGS:-6}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPSTREAM="${REPO_ROOT}/upstream"
 KEYS="${REPO_ROOT}/keys"
+PROVENANCE_OUT="${PROVENANCE_OUT:-${REPO_ROOT}/provenance.json}"
 TARBALL="bitcoin-${VERSION}-${TRIPLE}.tar.gz"
 
 for f in SHA256SUMS SHA256SUMS.asc "${TARBALL}"; do
@@ -100,7 +106,8 @@ digest="$(sha256sum "${UPSTREAM}/${TARBALL}" | cut -d' ' -f1)"
 
 # Provenance record. Attach this to the image with `cosign attest` so the
 # signer set and upstream digest travel with the artifact into the air gap.
-cat > "${REPO_ROOT}/provenance.json" <<EOF
+mkdir -p "$(dirname "${PROVENANCE_OUT}")"
+cat > "${PROVENANCE_OUT}" <<EOF
 {
   "upstream": "bitcoincore.org",
   "version": "${VERSION}",
@@ -114,4 +121,4 @@ cat > "${REPO_ROOT}/provenance.json" <<EOF
 EOF
 
 echo
-echo "OK — provenance.json written"
+echo "OK — ${PROVENANCE_OUT#"${REPO_ROOT}/"} written"
