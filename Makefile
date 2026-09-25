@@ -99,7 +99,7 @@ BUILD_DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>
 
 export SOURCE_DATE_EPOCH
 
-.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold print-buildkit-image print-image-ref print-version print-revision repro-digest repro-digest-write verify-repro verify-repro-published clean
+.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold print-buildkit-image print-image-ref print-version print-revision print-triple repro-digest repro-digest-write verify-repro verify-repro-published clean
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s$$'\t'
@@ -253,17 +253,22 @@ print-version: ## Print the upstream Bitcoin version
 print-revision: ## Print the image revision for that Bitcoin version
 	@echo "$(REVISION)"
 
+# For CI, which needs the tarball name to cache it. Asking make keeps the
+# workflow from becoming another copy of the arch table check-pins polices.
+print-triple: ## Print the tarball triple for PLATFORM
+	@echo "$(TRIPLE)"
+
 repro-digest: ## Print the image manifest digest THIS commit builds
-	scripts/verify-reproducible.sh --release
+	PLATFORM=$(PLATFORM) scripts/verify-reproducible.sh --release
 
 repro-digest-write: ## Update reproducible-digest.txt (a reviewed commit)
-	scripts/verify-reproducible.sh --write
+	PLATFORM=$(PLATFORM) scripts/verify-reproducible.sh --write
 
 verify-repro: ## Assert this tree still builds the committed canonical digest
-	scripts/verify-reproducible.sh
+	PLATFORM=$(PLATFORM) scripts/verify-reproducible.sh
 
 verify-repro-published: ## Prove a PUBLISHED image is bit-for-bit this commit
-	scripts/verify-reproducible.sh --against $(IMAGE):$(TAG)
+	PLATFORM=$(PLATFORM) scripts/verify-reproducible.sh --against $(IMAGE):$(TAG)
 
 # The only test in the repo that can fail for a security reason rather than an
 # operational one. It needs docker and the tarball, so it sits with the rest of
