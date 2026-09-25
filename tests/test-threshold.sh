@@ -46,6 +46,15 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPSTREAM="${REPO_ROOT}/upstream"
 KEYS="${REPO_ROOT}/keys"
 TARBALL="bitcoin-${VERSION}-${TRIPLE}.tar.gz"
+# The Dockerfile selects its tarball from TARGETARCH, so the build has to be
+# told the platform matching the fixture's triple, or it would look for a
+# tarball this test never staged. The verifier stage runs on the build host
+# either way, so this needs no emulation.
+case "${TRIPLE}" in
+  x86_64-linux-gnu)  PLATFORM=linux/amd64 ;;
+  aarch64-linux-gnu) PLATFORM=linux/arm64 ;;
+  *) echo "no platform for triple ${TRIPLE}" >&2; exit 2 ;;
+esac
 
 # Read the threshold from the Makefile rather than hardcoding it, so raising
 # MIN_GOOD_SIGS does not silently turn the accept case into a failing test.
@@ -255,7 +264,7 @@ run_dockerfile() {
         --target verifier \
         --network=none \
         --build-arg BITCOIN_VERSION="${VERSION}" \
-        --build-arg TARGET_TRIPLE="${TRIPLE}" \
+        --platform "${PLATFORM}" \
         --build-arg MIN_GOOD_SIGS="${THRESHOLD}" \
         --progress=plain \
         --output=type=cacheonly \
