@@ -23,7 +23,7 @@ ARG BITCOIN_VERSION=31.1
 # agree, exactly as it does for MIN_GOOD_SIGS. The default matters: a direct
 # `docker build` that forgets the build arg still produces a correctly labelled
 # image rather than one claiming to be "31.1-".
-ARG IMAGE_REVISION=1
+ARG IMAGE_REVISION=2
 # Invariant 4: pinned by digest, never by tag. This digest IS the `:nonroot`
 # variant of cc-debian12 as of 2026-09-12 — the name no longer says so, which
 # is the cost of pinning. It is an OCI image index (amd64, arm64/v8, arm/v7,
