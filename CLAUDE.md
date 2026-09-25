@@ -981,6 +981,15 @@ be picked up at any point.
          Contents manifests and SBOMs are per platform.
       5. **Docs.** README consumer section, and the `31.1-2` release itself.
 
+      **`REVISION` 1 → 2 — 2026-09-25**, ahead of tagging `v31.1-2`: same
+      binaries, new packaging. It moves both canonical digests (amd64
+      `3d127b5b…`, arm64 `f935173a…`), because the canonical build takes
+      `REVISION` from the Makefile and the version label is inside the image
+      config. Measured, not assumed: revision 1 and 2 differ **only** in
+      `org.opencontainers.image.version`, and their 1664 files are identical.
+      A revision bump always needs `make repro-digest-write` in the same
+      commit, or CI's `verify-repro` fails the PR.
+
       **Step 4, the release — 2026-09-25.** See *What the workflow does* for
       the shape. What was decided and measured, since it is not all visible in
       the workflow:
