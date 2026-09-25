@@ -25,22 +25,39 @@ on:
         type: boolean
         default: false
 
+# Read-only by default. Only the publish job gets write access and an OIDC
+# token, so the preflight jobs — including the one on the arm64 runner — can
+# neither push nor sign even if something in them misbehaves.
 permissions:
   contents: read
-  packages: write   # push to GHCR
-  id-token: write   # REQUIRED for keyless signing — without it cosign has no
-                    # OIDC token and the keyless step fails at the end, after
-                    # the image is already public.
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false   # never interrupt a publish midway
 
+# The shape, and why. Every platform must be BOOTED before anything is
+# published, and an arm64 binary can only be booted on arm64 hardware. So:
+#
+#   guard      refuse a bad ref, resolve the version, state the signing plan.
+#   preflight  one job per platform on a NATIVE runner: the whole verification
+#              chain, including smoke, against a local build. Keeps the contents
+#              manifest of the image it booted.
+#   publish    one job, amd64: pushes every platform as ONE index (arm64 is
+#              cross-built, no emulation needed), then verifies each platform
+#              BY DIGEST from the registry, proves each has exactly the files of
+#              the image its preflight booted, proves each is reproducible, and
+#              only then signs.
+#
+# Nothing is published until every preflight job has passed.
 jobs:
-  publish:
-    name: build, publish, sign
+  guard:
+    name: guard
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      revision: ${{ steps.v.outputs.revision }}
+      tag: ${{ steps.v.outputs.tag }}
     env:
       # A key pair is optional. Keyless alone is a complete signing story; the
       # key exists for offline verification where Sigstore is unreachable.
@@ -50,10 +67,7 @@ jobs:
       # release without that signature silently breaks it for them. An external
       # review noted a release could otherwise downgrade to keyless-only while
       # reporting success. Use the allow_keyless_only input to do it on purpose.
-      # The secret is named COSIGN_KEY. Note the name means two different
-      # things either side of this workflow: the SECRET holds the key's
-      # contents, while the make variable COSIGN_KEY is a PATH. The signing step
-      # writes one to a file and passes the other.
+      # Checked HERE, first, so a missing secret fails before any build runs.
       HAS_KEY: ${{ secrets.COSIGN_KEY != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -110,6 +124,97 @@ jobs:
           echo "revision=${rev}"  >> "$GITHUB_OUTPUT"
           echo "tag=${ver}-${rev}" >> "$GITHUB_OUTPUT"
           echo "publishing ${ver}-${rev} (bitcoin ${ver}, image revision ${rev}) from ${{ github.ref }}"
+
+      # Say out loud which modes will be used. A misnamed secret previously
+      # meant HAS_KEY was false, the key steps skipped, and the run went green
+      # having published keyless-only — a silent downgrade.
+      - name: Signing plan
+        run: |
+          set -euo pipefail
+          echo "keyless:  yes (identity = this workflow on ${{ github.ref }})"
+          if [ "${HAS_KEY}" = "true" ]; then
+            echo "key pair: yes (COSIGN_KEY secret present)"
+          elif [ "${{ inputs.allow_keyless_only }}" = "true" ]; then
+            echo "key pair: NO — deliberately allowed via allow_keyless_only."
+            echo "::warning::Publishing keyless-only by explicit request." \
+                 "cosign verify --key will not work for this release."
+          else
+            echo "::error::COSIGN_KEY secret is empty or unset." \
+                 "cosign.pub is published, so the README tells consumers to run" \
+                 "cosign verify --key, which would fail for this release." \
+                 "Set the secret, or re-run with allow_keyless_only=true."
+            exit 1
+          fi
+
+
+  preflight:
+    name: preflight (${{ matrix.arch }})
+    needs: guard
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      # Nothing is published unless both pass, so cancelling the other buys
+      # nothing — and seeing which platforms fail is the diagnosis.
+      fail-fast: false
+      matrix:
+        # Must list exactly the Makefile's PLATFORMS — check-pins.sh asserts it.
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      PLATFORM: linux/${{ matrix.arch }}
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Fetch the release tarball
+        run: make fetch-tarball VERSION="${VERSION}"
+      - name: Verify signatures and digest
+        run: make verify VERSION="${VERSION}"
+      - name: Cross-check against Core's verify.py
+        run: make cross-check VERSION="${VERSION}"
+      - name: Build
+        run: make build VERSION="${VERSION}"
+      # On this platform's own hardware: the binaries load and the node starts.
+      - name: Smoke test
+        run: make smoke VERSION="${VERSION}"
+      - name: Verify image binaries
+        run: make verify-image VERSION="${VERSION}"
+      - name: Verify image contents
+        run: make verify-contents VERSION="${VERSION}"
+      # The inventory of the image that was just BOOTED. The publish job pushes
+      # a different build — one index, cross-built — and compares the files of
+      # what it pushed against this. That comparison is what lets "smoke passed"
+      # carry over to the published image.
+      - name: Keep the booted image's contents manifest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: booted-${{ matrix.arch }}
+          path: contents-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+
+  publish:
+    name: publish, verify, sign
+    needs: [guard, preflight]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write   # push to GHCR
+      id-token: write   # REQUIRED for keyless signing — without it cosign has no
+                        # OIDC token and the keyless step fails at the end, after
+                        # the image is already public.
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+      # The secret is named COSIGN_KEY. Note the name means two different
+      # things either side of this workflow: the SECRET holds the key's
+      # contents, while the make variable COSIGN_KEY is a PATH. The signing step
+      # writes one to a file and passes the other.
+      HAS_KEY: ${{ secrets.COSIGN_KEY != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Pinned by version AND verified by hash. A repo that admits Bitcoin
       # binaries only on six builder signatures should not fetch the tool it
@@ -171,91 +276,73 @@ jobs:
           docker buildx use release
           docker buildx inspect --bootstrap
 
-      # Say out loud which modes will be used. A misnamed secret previously
-      # meant HAS_KEY was false, the key steps skipped, and the run went green
-      # having published keyless-only — a silent downgrade.
-      - name: Signing plan
+      # Every platform's tarball, verified again on THIS runner, because these
+      # are the bytes the push below builds from. The preflight jobs verified
+      # their own copies on other machines.
+      - name: Fetch and verify every platform's tarball
         run: |
           set -euo pipefail
-          echo "keyless:  yes (identity = this workflow on ${{ github.ref }})"
-          if [ "${HAS_KEY}" = "true" ]; then
-            echo "key pair: yes (COSIGN_KEY secret present)"
-          elif [ "${{ inputs.allow_keyless_only }}" = "true" ]; then
-            echo "key pair: NO — deliberately allowed via allow_keyless_only."
-            echo "::warning::Publishing keyless-only by explicit request." \
-                 "cosign verify --key will not work for this release."
-          else
-            echo "::error::COSIGN_KEY secret is empty or unset." \
-                 "cosign.pub is published, so the README tells consumers to run" \
-                 "cosign verify --key, which would fail for this release." \
-                 "Set the secret, or re-run with allow_keyless_only=true."
-            exit 1
-          fi
+          for p in $(make -s print-platforms); do
+            make fetch-tarball VERSION="${VERSION}" PLATFORM="$p"
+            make verify        VERSION="${VERSION}" PLATFORM="$p"
+          done
 
-      - name: Fetch the release tarball
-        run: make fetch-tarball VERSION=${{ steps.v.outputs.version }}
-      - name: Verify signatures and digest
-        run: make verify VERSION=${{ steps.v.outputs.version }}
-      - name: Cross-check against Core's verify.py
-        run: make cross-check VERSION=${{ steps.v.outputs.version }}
-      - name: Build
-        run: make build VERSION=${{ steps.v.outputs.version }}
-      - name: Smoke test
-        run: make smoke VERSION=${{ steps.v.outputs.version }}
-      - name: Verify image binaries
-        run: make verify-image VERSION=${{ steps.v.outputs.version }}
-      - name: Verify image contents
-        run: make verify-contents VERSION=${{ steps.v.outputs.version }}
+      - name: Collect the booted images' contents manifests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: booted-*
+          path: booted
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" \
           | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      # ← the first irreversible step. Every platform, one index.
       - name: Push
-        run: make push VERSION=${{ steps.v.outputs.version }}
+        run: make push VERSION="${VERSION}"
 
-      # `make build` and `make push` are two separate buildx invocations with
-      # different flags, so the steps above verified the LOCAL image while what
-      # got published came from a second build. Cache normally makes them
-      # identical, but nothing asserted it — which would mean signing an artifact
-      # that was never verified. Re-verify what is actually in the registry
-      # BEFORE signing it.
-      - name: Re-verify the PUSHED image before signing it
+      # Everything below reads the REGISTRY, by digest, per platform.
+      #
+      # This replaces a step that claimed to "re-verify the PUSHED image" and
+      # never did: `make build` had put the same tag in the local store, so
+      # `docker create` used the local copy and nothing was pulled. v31.1-1 was
+      # still sound — verify-repro-published did read the registry, and matched
+      # — but the step claimed more than it checked. A digest reference cannot be
+      # satisfied by a different local image.
+      #
+      # Per platform, before anything is signed:
+      #   verify-published   binaries MATCH, every file accounted for, and the
+      #                      three predicates written — from the pushed digest.
+      #   compare-contents   the pushed image has exactly the files of the one
+      #                      its preflight job booted on native hardware.
+      #   verify-repro-published
+      #                      the pushed image is bit-for-bit what this tag
+      #                      builds. Checks the IMAGE MANIFEST, not the index,
+      #                      whose attestations carry per-build timestamps and
+      #                      random ids by design. Do not "fix" this to compare
+      #                      index digests. REPRO_BUILDER=release rebuilds on the
+      #                      same daemon that built what is in the registry.
+      - name: Verify every published platform, by digest
         run: |
           set -euo pipefail
-          make verify-image    VERSION=${{ steps.v.outputs.version }}
-          make verify-contents VERSION=${{ steps.v.outputs.version }}
+          for p in $(make -s print-platforms); do
+            arch="${p#*/}"
+            echo "::group::${p}"
+            make verify-published VERSION="${VERSION}" PLATFORM="$p"
+            scripts/compare-contents.sh "booted/booted-${arch}/contents-manifest.json" \
+              "predicates/${p//\//-}/contents-manifest.json"
+            REPRO_BUILDER=release \
+              make verify-repro-published VERSION="${VERSION}" PLATFORM="$p"
+            echo "::endgroup::"
+          done
 
-      # Prove the published image is bit-for-bit what this tag builds. The step
-      # above proves the registry holds the right BINARIES and nothing else;
-      # this proves the whole image is byte-identical to an independent build of
-      # the same commit, which is the claim an outsider can repeat.
-      #
-      # It checks the IMAGE MANIFEST inside the index, not the index digest.
-      # The index also wraps the attestations, and those carry per-build
-      # timestamps and random ids, so the index digest differs on every build by
-      # design and always will. Do not "fix" this to compare index digests.
-      #
-      # REPRO_BUILDER=release reuses the builder that performed the push, rather
-      # than letting the script start a second one. Same pinned buildkit image
-      # either way, so the digests would agree regardless — but reusing it means
-      # the rebuild runs on literally the same daemon that built what is in the
-      # registry, which is one fewer thing to argue about if this ever
-      # disagrees.
-      - name: Prove the published image is reproducible
-        run: |
-          REPRO_BUILDER=release \
-            make verify-repro-published VERSION=${{ steps.v.outputs.version }}
-
-      # The SBOM is generated from the PUSHED image, so it describes exactly what
-      # consumers will pull.
-      - name: Generate SBOM
-        run: make sbom VERSION=${{ steps.v.outputs.version }}
-
+      # Signs the index and every image in it, and attaches each platform's own
+      # three predicates to that platform's digest — after checking each was
+      # produced from that digest. See scripts/sign-image.sh.
       - name: Sign — keyless
         env:
           COSIGN_KEYLESS: '1'
-        run: make sign VERSION=${{ steps.v.outputs.version }}
+        run: make sign VERSION="${VERSION}"
 
       - name: Sign — key pair
         if: env.HAS_KEY == 'true'
@@ -278,7 +365,7 @@ jobs:
           # reads COSIGN_PASSWORD from the environment, rejects a wrong one, and
           # exits rather than hanging when none is set (no TTY in CI).
           cosign public-key --key /tmp/cosign.key > /tmp/cosign.pub
-          make sign VERSION=${{ steps.v.outputs.version }} COSIGN_KEY=/tmp/cosign.key
+          make sign VERSION="${VERSION}" COSIGN_KEY=/tmp/cosign.key
 
       # Verifies whichever modes were actually used. COSIGN_IDENTITY covers the
       # keyless signature; COSIGN_PUB is set only when a key pair was used, and
@@ -290,41 +377,36 @@ jobs:
           set -euo pipefail
           args=()
           if [ "${HAS_KEY}" = "true" ]; then args+=(COSIGN_PUB=/tmp/cosign.pub); fi
-          make verify-sig VERSION=${{ steps.v.outputs.version }} "${args[@]}"
+          make verify-sig VERSION="${VERSION}" "${args[@]}"
 
-      # Derived from the Makefile rather than hardcoded, so it cannot drift from
-      # whatever IMAGE actually is.
-      - name: Publish the digest
+      # The index digest is what consumers pin. The per-platform image digests
+      # are the reproducible part, and each was just proven equal to a rebuild of
+      # this tag; they are also where the attestations live.
+      - name: Publish the digests
         run: |
           set -euo pipefail
-          ref="$(make -s digest-ref VERSION=${{ steps.v.outputs.version }})"
-          # The reproducible half of the claim. Publishing this is what lets
-          # somebody else check it: check out the tag, run
-          # `make verify-repro-published`, and they either get the same image
-          # manifest digest or they have found something worth telling us about.
-          img="$(make -s repro-digest VERSION=${{ steps.v.outputs.version }} | sed -n 's/^image manifest digest: //p')"
+          ref="$(make -s digest-ref VERSION="${VERSION}")"
+          platforms="$(scripts/list-platforms.sh "${ref}")"
           {
             echo "### Published"
+            echo "Pin this (the multi-arch index):"
             echo '```'
             echo "${ref}"
             echo '```'
-            echo "Reproducible image manifest (rebuild this tag and compare):"
+            echo "Reproducible image manifests, one per platform (rebuild this tag and compare):"
             echo '```'
-            echo "${img}"
+            echo "${platforms}"
             echo '```'
-            echo "\`git checkout ${{ github.ref_name }} && make fetch-tarball && make verify-repro-published\`"
+            echo "\`git checkout ${{ github.ref_name }} && make fetch-tarball PLATFORM=<platform> && make verify-repro-published PLATFORM=<platform>\`"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "published ${ref}"
-          echo "reproducible image manifest ${img}"
+          echo "${platforms}"
 
       - name: Upload attestation inputs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-${{ steps.v.outputs.tag }}-predicates
-          path: |
-            provenance.json
-            sbom.spdx.json
-            contents-manifest.json
+          name: release-${{ needs.guard.outputs.tag }}-predicates
+          path: predicates/
           if-no-files-found: warn
           retention-days: 90

@@ -349,7 +349,48 @@ both shipped binaries, is checked by content.
 
 Swap `--type` for `spdxjson` or the `bitcoind-provenance/v1` type to check the
 other two. `make verify-sig` runs all four checks at once if you would rather
-not type them.
+not type them — for `31.1-1`, add `ATTESTATIONS_ON=index` (below).
+
+### From `31.1-2`: one index, attestations per platform
+
+From `31.1-2` the image is a multi-arch index, linux/amd64 and linux/arm64.
+`docker pull` picks your platform, and `cosign verify` on the tag checks the
+index signature exactly as above — every image inside it is signed too.
+
+The **attestations move**. Each platform's contents manifest, SBOM and
+provenance describe different bytes, so each is attached to *that platform's*
+image digest rather than to the index. `cosign verify-attestation` has no
+platform option, so name the digest:
+
+```bash
+ref=ghcr.io/thefutoneng/bitcoin:31.1-2
+digest=$(docker buildx imagetools inspect "$ref" --format \
+  '{{range .Manifest.Manifests}}{{if eq .Platform.Architecture "arm64"}}{{.Digest}}{{end}}{{end}}')
+
+cosign verify-attestation \
+  --certificate-identity-regexp \
+    '^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --type https://github.com/TheFutonEng/bitcoin/predicate/bitcoind-contents/v1 \
+  "ghcr.io/thefutoneng/bitcoin@${digest}" \
+  | jq -r .payload | base64 -d | jq '.predicate.image, .predicate.triple, .predicate.complete'
+```
+
+**Check `.predicate.image`, not just the signature.** It must end in the digest
+you asked about. A valid signature proves who made a statement, not what the
+statement is about: the arm64 contents manifest attached to the amd64 image
+verifies perfectly well with cosign. `make verify-sig` checks this for every
+platform — the contents manifest names the digest, the SBOM describes it, and the
+provenance is for the same tarball — and fails if any attestation on an image
+describes a different one. That case was tested by attaching exactly that, with
+the real key.
+
+`make verify-sig` defaults to this layout. Releases up to `31.1-1` attached
+their attestations to the index instead, so check those with
+`make verify-sig TAG=31.1-1 ATTESTATIONS_ON=index`. The layout is chosen
+explicitly rather than detected: a verifier that fell back to the old layout
+when per-platform attestations were missing would accept an image stripped of
+them.
 
 ## Repository layout
 
@@ -366,10 +407,15 @@ scripts/fetch-sums-from-guix-sigs.sh  recover signed sums for a withdrawn releas
 scripts/check-pins.sh            assert duplicated values agree across files
 scripts/build-keyring.sh         regenerate the keyring the container build uses
 scripts/verify-reproducible.sh   prove this commit builds the same image bytes anywhere
+scripts/list-platforms.sh        the platform images inside a published index, from the registry
+scripts/compare-contents.sh      prove two images hold exactly the same files
+scripts/sign-image.sh            sign the index and its images; attest each platform
+scripts/verify-signatures.sh     prove signatures and attestations, and what each is about
 tests/test-threshold.sh          negative tests for the signature threshold
 tests/test-config.sh             prove config and the datadir reach the container
 examples/bitcoin.conf            commented teaching file, and the fixture the test runs
-.github/workflows/ci.yml         runs the whole chain on every pull request
+.github/workflows/ci.yml         runs the whole chain on every pull request, per platform
+.github/workflows/release.yml    tag-triggered: boot each platform natively, then publish
 keys/                            pubkeys for the allowlisted builders, the allowlist,
                                  and the derived keyring the build verifies against
 upstream/                        committed: SHA256SUMS + .asc. Gitignored: the tarball.
@@ -394,8 +440,12 @@ make fetch-tarball
 make verify-repro-published TAG=31.2
 ```
 
-Each release prints the expected image manifest digest in its workflow summary,
-so you can also compare by eye with `make repro-digest`.
+That checks linux/amd64. For a multi-arch release, add `PLATFORM=linux/arm64`
+to both `make` commands to check the other image — it cross-builds, so an amd64
+machine can check the arm64 image and needs no emulation to do it.
+
+Each release prints the expected image manifest digests, one per platform, in
+its workflow summary, so you can also compare by eye with `make repro-digest`.
 
 That rebuilds from the commit and compares against what is actually in the
 registry. It is a stronger statement than a signature: a signature says who

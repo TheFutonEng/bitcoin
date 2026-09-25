@@ -50,7 +50,8 @@
 #     scripts/verify-reproducible.sh --against REF   # compare THIS commit to a published image
 #
 #   PLATFORM= (default linux/amd64) selects which platform the other three modes
-#   build and check. --write ignores it and builds all of ALL_PLATFORMS.
+#   build and check. --write ignores it and builds every platform in the
+#   Makefile's PLATFORMS.
 #
 set -euo pipefail
 
@@ -67,10 +68,6 @@ set_triple() {
   esac
 }
 set_triple "${PLATFORM}"
-# Every platform the published index carries, and therefore every platform the
-# reproducibility claim covers. --write records one digest per entry. Adding a
-# platform here without a mapping above fails at once rather than skipping it.
-ALL_PLATFORMS="linux/amd64 linux/arm64"
 MIN_GOOD_SIGS="${MIN_GOOD_SIGS:-6}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -96,6 +93,12 @@ BUILDKIT_IMAGE="$(sed -n 's/^BUILDKIT_IMAGE[[:space:]]*?*=[[:space:]]*\(.*\)$/\1
 # default is currently correct — check-pins.sh asserts it equals REVISION — but
 # that makes this script's output depend on a second invariant holding, for no
 # reason other than that it happened to be omitted here.
+# Every platform the published index carries, and therefore every platform the
+# reproducibility claim covers: PLATFORMS in the Makefile, the same list
+# `make push` builds. --write records one digest per entry; one without a
+# mapping in set_triple fails at once rather than being skipped.
+ALL_PLATFORMS="$(sed -n 's/^PLATFORMS[[:space:]]*?*=[[:space:]]*\(.*\)$/\1/p' "${REPO_ROOT}/Makefile" | head -1)"
+[[ -n "${ALL_PLATFORMS}" ]] || { echo "could not read PLATFORMS from Makefile" >&2; exit 1; }
 REVISION="$(sed -n 's/^REVISION[[:space:]]*?*=[[:space:]]*\([0-9]\+\).*/\1/p' "${REPO_ROOT}/Makefile" | head -1)"
 [[ -n "${REVISION}" ]] || { echo "could not read REVISION from Makefile" >&2; exit 1; }
 

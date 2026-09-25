@@ -30,6 +30,18 @@ ifeq ($(origin TRIPLE),command line)
 $(error TRIPLE is derived from PLATFORM — pass PLATFORM=linux/arm64 instead)
 endif
 TRIPLE        := $(or $(TRIPLE_$(PLATFORM)),$(error no tarball triple for PLATFORM=$(PLATFORM)))
+# The platforms a release publishes, together, as one OCI index. Also the set
+# the reproducibility claim covers: verify-reproducible.sh --write reads this
+# line, and check-pins.sh asserts the CI and release matrices list the same
+# architectures. Every entry must have a triple above.
+PLATFORMS     ?= linux/amd64 linux/arm64
+$(foreach p,$(PLATFORMS),$(if $(TRIPLE_$(p)),,$(error PLATFORMS lists $(p), which has no tarball triple)))
+# Each platform's attestation predicates live apart, because each describes a
+# different image: its own tarball, its own files, its own SBOM. sign-image.sh
+# attaches predicates/<os>-<arch>/ to that platform's manifest digest.
+PREDICATES    := predicates/$(subst /,-,$(PLATFORM))
+comma := ,
+space := $(subst ,, )
 # GHCR: lives with the repo, so the published image is the archive, and CI
 # authenticates with the built-in GITHUB_TOKEN rather than a stored credential.
 REGISTRY      ?= ghcr.io/thefutoneng
@@ -99,7 +111,7 @@ BUILD_DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>
 
 export SOURCE_DATE_EPOCH
 
-.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold print-buildkit-image print-image-ref print-version print-revision print-triple repro-digest repro-digest-write verify-repro verify-repro-published clean
+.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold print-buildkit-image print-image-ref print-version print-revision print-triple print-platforms platform-ref verify-published repro-digest repro-digest-write verify-repro verify-repro-published clean
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s$$'\t'
@@ -173,10 +185,16 @@ build: verify ## Build the image (hermetic — no network in the build)
 #     the classic store never unpack here, so the flag is a no-op there and the
 #     two environments stop differing — the failure mode that has bitten this
 #     repo's build tooling twice.
-push: ## Build and push with full provenance + SBOM attestations
-	@echo "pushing $(IMAGE):$(TAG)"
+#
+# Every platform in PLATFORMS, in ONE build, so the result is one index. The
+# arm64 image is cross-built on an amd64 runner with no emulation: the verifier
+# stage runs on the build platform and the runtime stage only copies files. The
+# release proves the published arm64 image has exactly the files of the one
+# that booted natively in its preflight job — see release.yml.
+push: ## Build and push every platform in PLATFORMS as one index, with attestations
+	@echo "pushing $(IMAGE):$(TAG) for $(PLATFORMS)"
 	docker buildx build \
-	  --platform $(PLATFORM) \
+	  --platform $(subst $(space),$(comma),$(strip $(PLATFORMS))) \
 	  --network=none \
 	  --build-arg BITCOIN_VERSION=$(VERSION) \
 	  --build-arg IMAGE_REVISION=$(REVISION) \
@@ -258,6 +276,9 @@ print-revision: ## Print the image revision for that Bitcoin version
 print-triple: ## Print the tarball triple for PLATFORM
 	@echo "$(TRIPLE)"
 
+print-platforms: ## Print the platforms a release publishes
+	@echo "$(PLATFORMS)"
+
 repro-digest: ## Print the image manifest digest THIS commit builds
 	PLATFORM=$(PLATFORM) scripts/verify-reproducible.sh --release
 
@@ -269,6 +290,41 @@ verify-repro: ## Assert this tree still builds the committed canonical digest
 
 verify-repro-published: ## Prove a PUBLISHED image is bit-for-bit this commit
 	PLATFORM=$(PLATFORM) scripts/verify-reproducible.sh --against $(IMAGE):$(TAG)
+
+# PLATFORM's image inside the PUSHED index, as IMAGE@<its manifest digest>. Read
+# from the registry, never the local store. Accepts a variant suffix, since an
+# index may say linux/arm64/v8 where PLATFORM says linux/arm64.
+platform-ref: ## Print IMAGE@digest of PLATFORM's image in the pushed index
+	@set -euo pipefail; \
+	d="$$(scripts/list-platforms.sh $(IMAGE):$(TAG) \
+	      | awk -v p='$(PLATFORM)' '$$1 == p || index($$1, p "/") == 1 { print $$2 }')"; \
+	if [ "$$(printf '%s' "$$d" | grep -c .)" != 1 ]; then \
+	  echo "expected exactly one $(PLATFORM) image in $(IMAGE):$(TAG), got: '$$d'" >&2; exit 1; \
+	fi; \
+	echo "$(IMAGE)@$$d"
+
+# Verifies ONE platform of the published index and writes its predicates.
+#
+# By DIGEST, and that is the point. Before 2026-09-25 the release re-verified
+# `$(IMAGE):$(TAG)`, which `make build` had already put in the local store —
+# so `docker create` used the local copy and the step never read the registry.
+# A digest ref cannot be satisfied by a different local image: either the bytes
+# are identical, or docker pulls. The explicit pull makes that unconditional.
+#
+# The predicates it writes are the ones sign-image.sh attaches, so an image is
+# only ever attested with evidence produced from its own digest.
+verify-published: ## Verify PLATFORM's image in the pushed index by digest; write its predicates
+	@set -euo pipefail; \
+	ref="$$($(MAKE) -s platform-ref)"; \
+	echo ">> $(PLATFORM): $$ref"; \
+	docker pull -q --platform $(PLATFORM) "$$ref" >/dev/null; \
+	PLATFORM=$(PLATFORM) scripts/verify-image.sh "$$ref" $(VERSION) $(TRIPLE); \
+	PLATFORM=$(PLATFORM) MANIFEST=$(PREDICATES)/contents-manifest.json \
+	  scripts/verify-contents.sh "$$ref" $(VERSION) $(TRIPLE); \
+	MIN_GOOD_SIGS=$(MIN_GOOD_SIGS) PROVENANCE_OUT=$(PREDICATES)/provenance.json \
+	  scripts/verify.sh $(VERSION) $(TRIPLE); \
+	syft --platform $(PLATFORM) "$$ref" -o spdx-json=$(PREDICATES)/sbom.spdx.json; \
+	echo "predicates: $(PREDICATES)/"
 
 # The only test in the repo that can fail for a security reason rather than an
 # operational one. It needs docker and the tarball, so it sits with the rest of
@@ -301,8 +357,9 @@ digest: ## Print the pushed image digest — publish this, consumers pin it
 	@docker buildx imagetools inspect $(IMAGE):$(TAG) --format '{{.Manifest.Digest}}' 2>/dev/null \
 	  || echo "not pushed yet — run: make push"
 
-sbom: ## Generate an SBOM from the pushed image
-	syft $(IMAGE):$(TAG) -o spdx-json=sbom.spdx.json
+sbom: ## Generate PLATFORM's SBOM from the pushed index (verify-published does this too)
+	@mkdir -p $(PREDICATES)
+	syft --platform $(PLATFORM) "$$($(MAKE) -s platform-ref)" -o spdx-json=$(PREDICATES)/sbom.spdx.json
 
 # `sign` and `attest` are the same operation — cosign attaches the signature and
 # the three predicates to one digest — so they are one script and one target.
@@ -318,3 +375,4 @@ verify-sig: ## Prove the signature AND all three attestations round-trip
 
 clean:
 	rm -f provenance.json sbom.spdx.json contents-manifest.json
+	rm -rf predicates/

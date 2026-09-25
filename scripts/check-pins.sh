@@ -59,6 +59,16 @@ tt_arch="$(sed -n 's#^[[:space:]]*\([a-z0-9_-]*\))[[:space:]]*PLATFORM=linux/\([
 [[ -n "${df_arch}" ]] || { echo "  DRIFT ARCH_TRIPLES       could not read the Dockerfile's table"; fail=1; }
 cmp_vals "ARCH_TRIPLES" "${df_arch}" "${mk_arch}" "${vr_arch}" "${tt_arch}"
 
+# The platforms a release publishes, vs the architectures the workflows run.
+# The CI matrix is what proves each platform on native hardware on every PR, and
+# the release matrix is what boots each one before publishing. A platform added
+# to PLATFORMS but not to a matrix would be published having never been
+# executed; one dropped from a matrix silently stops being tested.
+mk_plats="$(sed -n 's/^PLATFORMS[[:space:]]*?=[[:space:]]*\(.*\)/\1/p' Makefile | tr ' ' '\n' | sed -n 's#^linux/##p' | arch_map)"
+ci_plats="$(sed -n 's/^[[:space:]]*- arch:[[:space:]]*\([a-z0-9]*\).*/\1/p' .github/workflows/ci.yml | arch_map)"
+rel_plats="$(sed -n 's/^[[:space:]]*- arch:[[:space:]]*\([a-z0-9]*\).*/\1/p' .github/workflows/release.yml | arch_map)"
+cmp_vals "PLATFORMS" "${mk_plats}" "${ci_plats}" "${rel_plats}"
+
 # RUNTIME_BASE: Makefile default vs Dockerfile ARG
 mk_base="$(sed -n 's/^RUNTIME_BASE[[:space:]]*?=[[:space:]]*\(.*\)/\1/p' Makefile)"
 df_base="$(sed -n 's/^ARG RUNTIME_BASE=\(.*\)/\1/p' Dockerfile)"

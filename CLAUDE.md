@@ -199,10 +199,13 @@ scripts/verify-image.sh          extract binaries from any image, compare to ver
 scripts/verify-contents.sh       prove EVERY file in the image is accounted for
 scripts/check-pins.sh            assert duplicated values agree across files
 scripts/build-keyring.sh         regenerate keys/trusted-keyring.gpg from keys/*.asc
-scripts/sign-image.sh            sign + attach all three attestations (key and/or keyless)
-scripts/verify-signatures.sh     prove the signature AND all three attestations round-trip
-.github/workflows/ci.yml         the whole chain on every PR; no secrets, actions SHA-pinned
-.github/workflows/release.yml    tag-triggered publish to GHCR; the ONLY workflow with secrets
+scripts/sign-image.sh            sign the index + its images; attest EACH platform's digest
+scripts/verify-signatures.sh     prove signatures + attestations, and that each is ABOUT its image
+scripts/list-platforms.sh        platform images in a published index, read from the registry
+scripts/compare-contents.sh      prove two images hold exactly the same files
+.github/workflows/ci.yml         the whole chain per platform, native runners; no secrets
+.github/workflows/release.yml    tag-triggered: boot each platform natively, publish one
+                                 index, verify by digest, sign; the ONLY workflow with secrets
 scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs
 scripts/fetch-sums-from-guix-sigs.sh  recover signed sums when upstream withdraws a release (read its header)
 scripts/cross-check-verify-py.sh second opinion on the threshold from Core's own verify.py
@@ -211,7 +214,8 @@ scripts/verify-reproducible.sh   prove this commit builds the same image bytes a
 tests/test-threshold.sh          negative tests: both threshold gates, same fixtures, must agree
 tests/test-config.sh             config and the datadir actually reach the container
 examples/bitcoin.conf            commented teaching file AND the fixture test-config.sh runs
-reproducible-digest.txt          the canonical image manifest digest CI checks every PR against
+reproducible-digest.txt          canonical image manifest digest per platform; CI checks each
+predicates/                      gitignored: per-platform attestation inputs, from verify-published
 keys/                            armored pubkeys for the allowlisted builders ONLY,
                                  trusted-fingerprints.txt, and trusted-keyring.gpg
                                  (derived; what the container build verifies against)
@@ -234,9 +238,11 @@ make check-pins
 make fetch VERSION=31.1          # downloads, verifies, cross-checks against verify.py
 git add upstream/SHA256SUMS upstream/SHA256SUMS.asc
 git commit -m "upstream: bitcoin core 31.1 sums"  # the tarball is gitignored
-make build smoke verify-image verify-contents
-make push                        # rebuilds with mode=max provenance + SBOM
-make sbom sign attest COSIGN_KEY=...
+make build smoke verify-image verify-contents        # per PLATFORM
+make push                        # every PLATFORMS entry, one index, mode=max + SBOM
+make verify-published PLATFORM=linux/amd64           # by digest; writes predicates/
+make verify-published PLATFORM=linux/arm64
+make sign COSIGN_KEY=...         # index + images signed, each platform attested
 make digest          # publish this; consumers pin it
 ```
 
@@ -268,12 +274,14 @@ and published under the tag, and a consumer who pinned the digest would only
 ever see the label.
 
 ```bash
-make repro-digest               # note this value
+make repro-digest PLATFORM=linux/amd64    # note both values
+make repro-digest PLATFORM=linux/arm64
 ```
 
-Write that digest down. The release prints the same figure into its job summary;
-if they match, the published image is bit-for-bit what this commit builds, on
-two different machines. That is the claim, and comparing is how you check it.
+Write those digests down. The release prints the same figures into its job
+summary; if they match, each published image is bit-for-bit what this commit
+builds, on two different machines. That is the claim, and comparing is how you
+check it. An amd64 laptop can produce the arm64 value: it cross-builds.
 
 ### Tag and push
 
@@ -287,30 +295,47 @@ identity binds to `refs/tags/<tag>` on this repository.
 
 ### What the workflow does, in order
 
-Worth knowing so a failure tells you where you stand:
+Three jobs. Worth knowing so a failure tells you where you stand:
 
-1. **Refuse a non-tag ref**, then **resolve version and revision** and compare
-   them to the tree. *Nothing has been published yet.*
-2. **Install cosign and syft**, pinned by version and verified by hash.
-3. **Set up a docker-container builder** on the pinned buildkit.
-4. **Signing plan** — fails outright if `COSIGN_KEY` is absent, unless
-   `allow_keyless_only=true` was passed. This is the guard against a silent
-   keyless-only downgrade.
-5. **The whole verification chain**: fetch-tarball, verify, cross-check, build,
-   smoke, verify-image, verify-contents. *Still nothing published.*
-6. **Log in to GHCR and push.** ← the first irreversible step.
-7. **Re-verify the PUSHED image** — verify-image and verify-contents against
-   what is actually in the registry, not the local build.
-8. **Prove the published image is reproducible** — rebuilds the tag and compares
-   the image manifest inside the published index.
-9. **SBOM**, then **sign keyless**, then **sign with the key pair**.
-10. **Verify the signing chain round-trips** — signature plus all three
-    attestations, in whichever modes were used.
-11. **Publish the digest** to the job summary, with the reproducible image
-    manifest digest and the command to check it.
+**`guard`** — refuse a non-tag ref; resolve version and revision and compare
+them to the tree; **signing plan**, which fails outright if `COSIGN_KEY` is
+absent unless `allow_keyless_only=true` was passed. It runs first, so a missing
+secret fails before any build. *Nothing published.*
 
-Steps 1–5 fail safely: nothing reached the registry. Steps 7–8 fail with an
-**unsigned image already public**, which is recoverable but needs a decision.
+**`preflight`**, once per platform on a **native** runner (`ubuntu-latest`,
+`ubuntu-24.04-arm`), read-only token: fetch-tarball, verify, cross-check, build,
+**smoke**, verify-image, verify-contents, and keep the contents manifest of the
+image it just **booted**. This is the only place an arm64 binary is executed
+before release. *Nothing published.*
+
+**`publish`**, amd64, the only job with `packages: write` and `id-token: write`:
+
+1. Install cosign and syft (pinned, hash-verified); set up the builder on the
+   pinned buildkit; fetch and verify **every** platform's tarball again here,
+   since these are the bytes the push builds from.
+2. **Log in and push** every platform as one index. ← the first irreversible
+   step. arm64 is cross-built; no emulation is involved.
+3. **Per platform, by digest, from the registry**: `verify-published` (binaries
+   MATCH, every file accounted for, predicates written), `compare-contents.sh`
+   (the published image has **exactly the files of the one preflight booted**),
+   `verify-repro-published` (bit-for-bit what this tag builds).
+4. **Sign keyless, then with the key pair**: index and every image signed; each
+   platform's three predicates attached to that platform's digest, after
+   checking each was produced from it.
+5. **Verify the signing chain** — every signature, every attestation, and that
+   each attestation describes the image it is attached to.
+6. **Publish the digests**: the index to pin, and each platform's reproducible
+   image manifest.
+
+`guard` and `preflight` fail safely: nothing reached the registry. `publish`
+steps 3–5 fail with an **unsigned image already public**, which is recoverable
+but needs a decision.
+
+**Rehearsed 2026-09-25 against a throwaway `registry:2`** with a throwaway key,
+running the per-platform loop verbatim as a script file: all green, and every
+new check mutation-tested. Keyless still cannot be rehearsed off CI, and the
+native preflight on `ubuntu-24.04-arm` inside a *release* has not run until the
+first multi-arch tag — though it is the same chain CI runs on every PR.
 
 ### After it goes green
 
@@ -320,8 +345,14 @@ cosign verify ghcr.io/thefutoneng/bitcoin:31.1-1 \
   --certificate-identity-regexp '^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
-make verify-repro-published TAG=31.1-1
+make verify-repro-published TAG=31.1-2 PLATFORM=linux/amd64
+make verify-repro-published TAG=31.1-2 PLATFORM=linux/arm64
+make verify-sig TAG=31.1-2 COSIGN_PUB=cosign.pub \
+  COSIGN_IDENTITY='^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/'
 ```
+
+`make verify-sig` checks the per-platform layout used from 31.1-2. For 31.1-1
+and earlier, whose attestations sit on the index, add `ATTESTATIONS_ON=index`.
 
 A workflow verifying its own signature proves the plumbing. An outsider
 verifying it with the published regexp proves the claim. **Do the second one
@@ -332,12 +363,14 @@ after every release**, and compare the job summary's digest against the
 
 The rule the versioning scheme exists to make possible:
 
-- **Nothing reached the registry** (steps 1–5): delete the tag, fix, re-tag the
+- **Nothing reached the registry** (`guard` or `preflight` failed, or
+  `publish` before its push): delete the tag, fix, re-tag the
   same name. No artifact ever carried it.
   ```bash
   git tag -d v31.1-1 && git push origin :refs/tags/v31.1-1
   ```
-- **Anything was published** (step 6 onward): **do not move the tag.** Bump
+- **Anything was published** (`publish`, from the push onward): **do not move
+  the tag.** Bump
   `REVISION`, commit, and tag `v31.1-2`. A moved tag means two different
   artifacts under one name, which is exactly what immutable revision tags are
   for. This is a change from how v31.1 was handled, when moving the tag was the
@@ -938,7 +971,7 @@ be picked up at any point.
 
       **Remaining, in order:**
 
-      4. **Release.** `make push` builds `linux/amd64,linux/arm64` into one
+      4. **Release — built and rehearsed 2026-09-25**, see below. `make push` builds `linux/amd64,linux/arm64` into one
          index. Re-verification must pull each platform **by digest** from the
          pushed index. The current "Re-verify the PUSHED image" step has never
          read the registry: `make build` left the same tag in the local store,
@@ -947,6 +980,38 @@ be picked up at any point.
          that step claims more than it does, and fixing it is part of this.
          Contents manifests and SBOMs are per platform.
       5. **Docs.** README consumer section, and the `31.1-2` release itself.
+
+      **Step 4, the release — 2026-09-25.** See *What the workflow does* for
+      the shape. What was decided and measured, since it is not all visible in
+      the workflow:
+
+      - **Attestations go on each platform's manifest digest, not the index.**
+        `cosign attest` binds to one digest and `verify-attestation` has no
+        `--platform`, so there is no other way to keep "this attestation
+        describes these bytes" true. The index and its images are signed with
+        `--recursive`. Consumers name the platform digest; the README shows
+        how. Earlier releases put them on the index, so `verify-sig` takes
+        `ATTESTATIONS_ON=index` for those — chosen explicitly, never inferred,
+        because falling back would accept an image stripped of its
+        per-platform attestations.
+      - **Each attestation is checked to be ABOUT its image**, at sign time and
+        at verify time: the contents manifest's `image` ends in that digest,
+        the SBOM's image `versionInfo` equals it, the provenance names the same
+        triple. Tested by attaching the arm64 contents manifest to the amd64
+        image **with the real key** via plain `cosign attest`: cosign accepted
+        it, `cosign verify-attestation` passed it, and only this check failed
+        it. A signature proves who spoke, not what about.
+      - **Preflight boots, publish cross-builds, and `compare-contents.sh`
+        joins them**: the published image must have exactly the files of the
+        booted one. Mutation-tested: one changed hash, a cross-platform pair,
+        and an empty manifest all fail.
+      - **The "re-verify the PUSHED image" step never read the registry** and
+        is gone. Per-platform verification is by digest; `list-platforms.sh`
+        uses `imagetools`, which has no local mode.
+      - `sign-image.sh` checks every platform's predicates before the first
+        signature, so a failure cannot leave a half-signed index. Mutants:
+        swapped predicate dirs, one swapped SBOM, a missing file — each
+        refused before anything was signed.
 
 - [x] **Confirm what the tarball actually ships.** Answered 2026-09-12 by
       unpacking the real 31.1 amd64 tarball.
@@ -1198,21 +1263,23 @@ make check-pins                          # asserts no private key is tracked
 #    attestations are byte-identical to the keyless ones.
 #      gh run download <run-id> -n release-31.1-predicates
 #
-#    Otherwise regenerate against the PUBLISHED image, not a fresh local build.
+#    It unpacks to predicates/<os>-<arch>/, which is where sign-image.sh looks.
+#
+#    Otherwise regenerate against the PUBLISHED image, by digest, per platform.
 #    fetch-tarball first: the tarball is gitignored, so a fresh clone has no
-#    copy, and `make verify` checks the vendored tarball's digest.
-make fetch-tarball   VERSION=31.1
-make verify          VERSION=31.1
-make verify-contents IMAGE=ghcr.io/thefutoneng/bitcoin TAG=31.1
-make sbom            IMAGE=ghcr.io/thefutoneng/bitcoin TAG=31.1
+#    copy. (Written for a multi-arch release, 31.1-2 onward. Both earlier
+#    releases already carry key-pair signatures, and sign-image.sh no longer
+#    produces their index-level layout.)
+for p in linux/amd64 linux/arm64; do
+  make fetch-tarball    VERSION=31.1 PLATFORM=$p
+  make verify-published VERSION=31.1 PLATFORM=$p TAG=31.1-2
+done
 
 docker login ghcr.io
-make sign IMAGE=ghcr.io/thefutoneng/bitcoin TAG=31.1 \
-     COSIGN_KEY=./cosign.key
+make sign TAG=31.1-2 COSIGN_KEY=./cosign.key
 
 # 4. Prove the round trip as a consumer would.
-make verify-sig IMAGE=ghcr.io/thefutoneng/bitcoin TAG=31.1 \
-     COSIGN_PUB=./cosign.pub
+make verify-sig TAG=31.1-2 COSIGN_PUB=./cosign.pub
 
 # 5. For FUTURE releases, add repo secrets COSIGN_KEY (the private key file's
 #    contents) and COSIGN_PASSWORD. release.yml picks them up automatically.
@@ -1392,3 +1459,29 @@ simplifies it back to a sleep-and-kill, it stops testing anything.
 **Allowlist file format.** One fingerprint per line, optional `# comment` after
 it. Both parsers strip inline comments and whitespace and uppercase the result —
 keep them in sync if you change the format.
+
+**Attestations live on digests, and reproducible digests outlive tags.** Found
+rehearsing the multi-arch release: pushing the same commit under a second tag
+produced the **same** per-platform image digests — the build is reproducible —
+so the second tag's images carried every attestation ever attached to those
+bytes, including one planted by an earlier mutation test. `verify-sig` failed
+it, correctly. For real releases this is benign: re-running a release from its
+tag re-attests the same digests, and every attestation still describes its
+image. It is also why `verify-signatures.sh` requires **all** attestations of a
+type to describe the image, not just one: "at least one good one" would pass an
+image carrying a foreign attestation alongside its own.
+
+**`mapfile -t x < <(cmd)` discards `cmd`'s exit status.** `set -e` does not see
+a failed process substitution, so a registry read that failed would yield an
+empty platform list — and `sign-image.sh` would have signed the index with no
+attestations at all and exited 0. Caught in review before it ran. Capture into
+a variable first (`out="$(cmd)"`), then `mapfile <<<"${out}"`, and assert the
+list is non-empty. Both signing scripts do.
+
+**Confirm a mutant actually applied before believing its result.** The first
+attempt to attach a foreign attestation used a predicate type read from
+`make -p` that came back empty; `cosign attest` failed quietly, nothing was
+attached, and `verify-sig` reported all-green — which read exactly like the
+check failing to catch it. Only the missing "cosign accepted it" line gave it
+away. A mutation test has three outcomes, not two: caught, missed, and **never
+happened**, and the third looks like the second.
