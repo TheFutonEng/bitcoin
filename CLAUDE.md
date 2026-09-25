@@ -345,13 +345,13 @@ cosign verify ghcr.io/thefutoneng/bitcoin:31.1-1 \
   --certificate-identity-regexp '^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
-make verify-repro-published TAG=31.1-2 PLATFORM=linux/amd64
-make verify-repro-published TAG=31.1-2 PLATFORM=linux/arm64
-make verify-sig TAG=31.1-2 COSIGN_PUB=cosign.pub \
+make verify-repro-published TAG=31.1-3 PLATFORM=linux/amd64
+make verify-repro-published TAG=31.1-3 PLATFORM=linux/arm64
+make verify-sig TAG=31.1-3 COSIGN_PUB=cosign.pub \
   COSIGN_IDENTITY='^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/'
 ```
 
-`make verify-sig` checks the per-platform layout used from 31.1-2. For 31.1-1
+`make verify-sig` checks the per-platform layout used from 31.1-3. For 31.1-1
 and earlier, whose attestations sit on the index, add `ATTESTATIONS_ON=index`.
 
 A workflow verifying its own signature proves the plumbing. An outsider
@@ -990,6 +990,45 @@ be picked up at any point.
       A revision bump always needs `make repro-digest-write` in the same
       commit, or CI's `verify-repro` fails the PR.
 
+      **v31.1-2 failed after the push — 2026-09-25.** `guard` and both
+      native `preflight` jobs passed (the first real arm64 boot inside a
+      release). In `publish`, amd64 verified completely by digest, then arm64
+      died in `verify-contents` with only "docker create failed" on the
+      distroless base. Cause, reproduced on a classic-store docker:dind before
+      any fix was written: the amd64 pass had stored the base's amd64 variant
+      under the **index** digest, and on the classic image store a
+      `repo@digest` reference holds exactly one image — asking for arm64 under
+      it fails with `cannot overwrite digest` instead of pulling. The local
+      rehearsal used this laptop's containerd store, which holds several
+      platforms per reference; PR CI verifies each platform on its own native
+      runner. Neither ever asked one classic daemon for two variants.
+
+      Fix: `verify-contents.sh` inventories the base by **that platform's own
+      manifest digest** (via `list-platforms.sh`), and prints docker's error
+      instead of hiding it. Verified on the classic dind against the real
+      published `31.1-2`: the whole remaining publish loop — both platforms,
+      by digest, `compare-contents` against the booted manifests the failed
+      run saved, and `verify-repro-published` — green. **The bytes under
+      `31.1-2` are correct**: amd64 `998fcec9…`, arm64 `c6fef8e8…`, both
+      reproducible, arm64's files identical to the natively booted image.
+
+      But it is **public and unsigned**, and it stays that way: re-running from
+      the tag would run the bug again (dispatch uses the workflow and scripts
+      as they were at that ref), and the rule is that a published revision is
+      never re-tagged. `REVISION` 3, same binaries, carries the fix; the
+      canonical digests move again, for the label alone.
+
+      **Rehearse on a classic store next time.** Every image-store bug in this
+      repo passed on this laptop first. A classic daemon is one command away
+      and the scripts only need `DOCKER_HOST`:
+
+      ```bash
+      docker run -d --privileged --name dind-classic -e DOCKER_TLS_CERTDIR= \
+        docker:dind --storage-driver=vfs --feature containerd-snapshotter=false
+      export DOCKER_HOST=tcp://$(docker inspect -f \
+        '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' dind-classic):2375
+      ```
+
       **Step 4, the release — 2026-09-25.** See *What the workflow does* for
       the shape. What was decided and measured, since it is not all visible in
       the workflow:
@@ -1276,19 +1315,19 @@ make check-pins                          # asserts no private key is tracked
 #
 #    Otherwise regenerate against the PUBLISHED image, by digest, per platform.
 #    fetch-tarball first: the tarball is gitignored, so a fresh clone has no
-#    copy. (Written for a multi-arch release, 31.1-2 onward. Both earlier
+#    copy. (Written for a multi-arch release, 31.1-3 onward. Both earlier
 #    releases already carry key-pair signatures, and sign-image.sh no longer
 #    produces their index-level layout.)
 for p in linux/amd64 linux/arm64; do
   make fetch-tarball    VERSION=31.1 PLATFORM=$p
-  make verify-published VERSION=31.1 PLATFORM=$p TAG=31.1-2
+  make verify-published VERSION=31.1 PLATFORM=$p TAG=31.1-3
 done
 
 docker login ghcr.io
-make sign TAG=31.1-2 COSIGN_KEY=./cosign.key
+make sign TAG=31.1-3 COSIGN_KEY=./cosign.key
 
 # 4. Prove the round trip as a consumer would.
-make verify-sig TAG=31.1-2 COSIGN_PUB=./cosign.pub
+make verify-sig TAG=31.1-3 COSIGN_PUB=./cosign.pub
 
 # 5. For FUTURE releases, add repo secrets COSIGN_KEY (the private key file's
 #    contents) and COSIGN_PASSWORD. release.yml picks them up automatically.

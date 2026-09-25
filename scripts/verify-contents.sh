@@ -120,8 +120,11 @@ inventory() {
   local cid
   # A dummy command keeps `docker create` happy on images with no CMD, such as
   # the distroless base. The container is never started.
-  cid="$(docker create --platform "${PLATFORM}" "${image}" /nonexistent-never-run 2>/dev/null)" || {
-    echo "docker create failed for ${image}" >&2; return 1; }
+  # docker's own error is kept: on the v31.1-2 release this said only "docker
+  # create failed", and the reason — "cannot overwrite digest" — had to be
+  # reproduced to be seen.
+  cid="$(docker create --platform "${PLATFORM}" "${image}" /nonexistent-never-run 2>"${tmp}/create.err")" || {
+    echo "docker create failed for ${image}:" >&2; sed 's/^/  /' "${tmp}/create.err" >&2; return 1; }
   cids+=("${cid}")
   mkdir -p "${dir}"
   # `|| true` here used to swallow a failed export: an empty inventory compared
@@ -165,11 +168,34 @@ inventory() {
   fi
 }
 
+# Inventory the base by ITS PLATFORM'S OWN manifest digest, not the index digest
+# the label names. On the classic image store a `repo@digest` reference can point
+# at exactly one local image: once the amd64 variant is stored under the index
+# digest, asking for arm64 under the same reference fails with "cannot overwrite
+# digest" instead of pulling. That failed the v31.1-2 release — amd64 verified,
+# then arm64 could not load its base — after the push. The containerd store
+# holds several platforms per reference, which is why the local rehearsal
+# passed; PR CI verifies each platform on its own native runner, so it never
+# asked one daemon for two variants. Reproduced on a classic-store dind before
+# this was written. Fourth time the image store has produced a split like this.
+#
+# If the base cannot be listed as an index — it is already one platform's
+# manifest, or the registry is unreachable — the reference is used as given.
+# That fails closed: `docker create --platform` refuses a mismatched image.
+base_ref="${BASE}"
+if listing="$("${REPO_ROOT}/scripts/list-platforms.sh" "${BASE}" 2>/dev/null)"; then
+  d="$(awk -v p="${PLATFORM}" '$1 == p || index($1, p "/") == 1 || index(p, $1 "/") == 1 { print $2 }' <<<"${listing}")"
+  [[ -n "${d}" && "${d}" != *$'\n'* ]] || {
+    echo "base ${BASE} has no single ${PLATFORM} image (got: '${d}')" >&2; exit 1; }
+  base_ref="${BASE%@*}@${d}"
+fi
+
 echo ">> platform:             ${PLATFORM}"
 echo ">> inventorying image:  ${IMAGE}"
 inventory "${IMAGE}" "${tmp}/image.txt"
 echo ">> inventorying base:   ${BASE}"
-inventory "${BASE}" "${tmp}/base.txt"
+[[ "${base_ref}" == "${BASE}" ]] || echo "   as ${PLATFORM} image:  ${base_ref}"
+inventory "${base_ref}" "${tmp}/base.txt"
 
 # Expected files contributed by the verified release tarball, keyed by the path
 # they occupy in the final image.

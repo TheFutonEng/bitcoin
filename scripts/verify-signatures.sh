@@ -13,7 +13,7 @@
 # of a transparency log, not about the signature itself. The keyless mode is what
 # provides the transparency trail.
 #
-# MULTI-ARCH, from 31.1-2: the index is signed, every image in it is signed,
+# MULTI-ARCH, from 31.1-3: the index is signed, every image in it is signed,
 # and each image carries its own three attestations — see sign-image.sh. Each
 # attestation is also checked to be ABOUT the image it is attached to: the
 # contents manifest must name that digest, the SBOM must describe it, and the
@@ -27,9 +27,10 @@
 #   COSIGN_IDENTITY=   expected certificate identity regexp — verifies keyless
 #   COSIGN_ISSUER=     expected OIDC issuer (default: GitHub Actions)
 #   COSIGN_EXTRA=      extra cosign flags, e.g. --allow-insecure-registry
-#   ATTESTATIONS_ON=   `platform` (default) for 31.1-2 onward; `index` for
+#   ATTESTATIONS_ON=   `platform` (default) for 31.1-3 onward; `index` for
 #                      releases up to 31.1-1, which attached their attestations
-#                      to the index digest. Explicit rather than guessed: a
+#                      to the index digest. (31.1-2 carries no signatures at all:
+#                      its release failed after the push — see CLAUDE.md.) Explicit rather than guessed: a
 #                      verifier that falls back to the older layout when the
 #                      newer one is missing would accept an image stripped of
 #                      its per-platform attestations.

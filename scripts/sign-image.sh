@@ -24,7 +24,7 @@
 # image, and that is the guarantee this repo exists to make. An image signed
 # without it is missing the interesting part.
 #
-# MULTI-ARCH LAYOUT, from 31.1-2. The index and every image in it are signed
+# MULTI-ARCH LAYOUT, from 31.1-3. The index and every image in it are signed
 # (`cosign sign --recursive`). Each platform's attestations go on THAT
 # PLATFORM'S manifest digest, from predicates/<os>-<arch>/ — never on the
 # index. cosign attaches an attestation to exactly one digest, and each

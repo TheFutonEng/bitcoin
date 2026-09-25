@@ -16,7 +16,7 @@ VERSION       ?= 31.1
 # Starts at 1, not 0, which is what Debian does and what `31.1-1` should mean:
 # the first packaging of 31.1. Keep in sync with ARG IMAGE_REVISION in the
 # Dockerfile — check-pins.sh asserts it, the same way it does MIN_GOOD_SIGS.
-REVISION      ?= 2
+REVISION      ?= 3
 # PLATFORM selects the architecture; TRIPLE follows from it and is not meant to
 # be set on its own. The Dockerfile makes the same mapping from TARGETARCH — it
 # has to, because one multi-platform build cannot take a per-platform build arg

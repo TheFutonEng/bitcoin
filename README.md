@@ -351,9 +351,15 @@ Swap `--type` for `spdxjson` or the `bitcoind-provenance/v1` type to check the
 other two. `make verify-sig` runs all four checks at once if you would rather
 not type them — for `31.1-1`, add `ATTESTATIONS_ON=index` (below).
 
-### From `31.1-2`: one index, attestations per platform
+### From `31.1-3`: one index, attestations per platform
 
-From `31.1-2` the image is a multi-arch index, linux/amd64 and linux/arm64.
+From `31.1-3` the image is a multi-arch index, linux/amd64 and linux/arm64.
+
+**`31.1-2` is public and unsigned — do not use it.** Its release pushed the
+image and then failed before signing, on a tooling bug rather than a bad
+artifact. The tag is not moved or reused; `31.1-3` is the same binaries,
+signed and attested. Verifying `31.1-2` fails, as it should.
+
 `docker pull` picks your platform, and `cosign verify` on the tag checks the
 index signature exactly as above — every image inside it is signed too.
 
@@ -363,7 +369,7 @@ image digest rather than to the index. `cosign verify-attestation` has no
 platform option, so name the digest:
 
 ```bash
-ref=ghcr.io/thefutoneng/bitcoin:31.1-2
+ref=ghcr.io/thefutoneng/bitcoin:31.1-3
 digest=$(docker buildx imagetools inspect "$ref" --format \
   '{{range .Manifest.Manifests}}{{if eq .Platform.Architecture "arm64"}}{{.Digest}}{{end}}{{end}}')
 
@@ -495,7 +501,7 @@ what happened on the v31.1-1 release, and is why the flag is there.
 - **arm64 is built and tested but not yet published.** CI runs the whole chain
   on a native arm64 runner — smoke, config tests, binary and contents
   verification, and the reproducible digest — but every published tag so far is
-  amd64 only. The first multi-arch release will be `31.1-2`.
+  amd64 only. The first multi-arch release will be `31.1-3`.
 - **The published *index* digest is not reproducible, and cannot be.** The image
   inside it is. See "Reproducible builds" above; the distinction is real and the
   index digest is the one you pin.
