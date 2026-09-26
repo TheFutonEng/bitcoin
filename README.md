@@ -8,23 +8,25 @@ manifest of everything inside it.
 Scope is deliberately narrow: this repo **builds, verifies, and publishes an
 image**. It says nothing about how you deploy or operate a node.
 
-> **Status: published.** `ghcr.io/thefutoneng/bitcoin:31.1-1` is live. It is
-> signed two ways — keyless and with a published key pair — and carries three
+> **Status: published, multi-arch.** `ghcr.io/thefutoneng/bitcoin:31.1-3` is
+> live for **linux/amd64 and linux/arm64** as one index — `docker pull` picks
+> your platform. The index and both images are signed two ways — keyless and
+> with a published key pair — and each image carries its own three
 > attestations: provenance, SBOM, and a contents manifest accounting for every
-> file in the image. All of it verifies from a clean machine using the commands
-> in [Verifying what you pulled](#verifying-what-you-pulled), and the image
-> inside it is reproducible: rebuild the tag yourself and you get the same bytes.
+> file in it. All of it verifies from a clean machine using the commands in
+> [Verifying what you pulled](#verifying-what-you-pulled), and each image is
+> reproducible: rebuild the tag yourself and you get the same bytes, on either
+> platform.
 >
 > ```
-> ghcr.io/thefutoneng/bitcoin@sha256:0dc05d92fc66979482c0c1ed572c6d08f3f5b5c362e54f12fe885a432673649e
+> ghcr.io/thefutoneng/bitcoin@sha256:073762e5a5cec19ac81682ac49f6b10707af13374e2b98314595d301bd8082f5
 > ```
 >
 > Pin that digest.
 >
-> An earlier `ghcr.io/thefutoneng/bitcoin:31.1` also exists. It predates both
-> the `<bitcoin version>-<image revision>` tagging scheme described under
-> [Versioning](#versioning) and the reproducibility work, and is the only image
-> published under a bare version tag. Prefer `31.1-1`.
+> Three earlier tags exist, all Bitcoin Core 31.1: `:31.1` and `:31.1-1` are
+> signed, amd64-only images from before multi-arch, and **`:31.1-2` is unsigned
+> — do not use it**. See [Earlier tags](#earlier-tags) for what each one is.
 
 ## Why this exists
 
@@ -147,7 +149,7 @@ Run `make help` for the full target list.
 Tags are `<bitcoin version>-<image revision>`:
 
 ```
-ghcr.io/thefutoneng/bitcoin:31.1-1
+ghcr.io/thefutoneng/bitcoin:31.1-3
                             ^^^^ ^
                             |    image revision
                             Bitcoin Core version
@@ -174,9 +176,47 @@ registry and are not part of the artifact; the label is what survives a
 **Bare version tags are not published.** There is no `:31.1` being maintained —
 it would be ambiguous the moment the image changes without the binaries
 changing, which is exactly what the revision exists to express. Pin a digest for
-anything real; use `31.1-1` when you want a name.
+anything real; use `31.1-3` when you want a name.
 
-### The one exception, stated plainly
+### Earlier tags
+
+Every tag stays where it is. A published tag is never moved or reused — that is
+the rule the revision number exists to make possible — so the older ones remain,
+and this is what each of them is.
+
+| Tag | Platforms | Signed | Notes |
+|---|---|---|---|
+| `31.1-3` | amd64, arm64 | yes, both ways | **current** |
+| `31.1-2` | amd64, arm64 | **no** | release failed after the push — below |
+| `31.1-1` | amd64 | yes, both ways | attestations on the index, not per image |
+| `31.1`   | amd64 | yes, both ways | before this tagging scheme — below |
+
+#### `31.1-2`: published, never signed
+
+`31.1-2` was the first multi-arch release. Its workflow pushed the image and then
+failed **before signing it**, so the tag points at an image with no signatures
+and no attestations. `cosign verify` against it fails, and it should: there is
+nothing to verify, and an unsigned image is exactly what the verification steps
+exist to turn away. Use `31.1-3`.
+
+The failure was in the release tooling, not the image. Checking each platform
+out of the registry, the tooling asked the runner's Docker for the arm64 variant
+of the base image under a reference that already held the amd64 one, and the
+classic image store refuses that. Everything the release had checked up to that
+point passed, and the image was later verified independently: its binaries are
+the verified upstream bytes, every file is accounted for, both platforms rebuild
+bit-for-bit from the tagged commit, and the arm64 image has exactly the files of
+the one that booted on native arm64 hardware during the release.
+
+So the bytes are sound, and the tag is left in place rather than deleted —
+deleting it would break anyone who already pinned it and cannot be undone.
+But **correct bytes are not the same as a verifiable image**. The release could
+not be re-run to sign it: a re-run executes the workflow as it was at that tag,
+bug included, and moving the tag would put two different artifacts under one
+name. `31.1-3` is the same Bitcoin Core binaries, released with the fix and
+signed; the only difference in the image is its version label.
+
+#### `31.1`: before this scheme
 
 `ghcr.io/thefutoneng/bitcoin:31.1` exists. It was published on 2026-09-19,
 before this scheme, and it is a legitimate signed image — the verification steps
@@ -193,7 +233,7 @@ it, and that is worth more than closing a one-image gap in the numbering.
 ## Using the image
 
 ```bash
-docker run --rm ghcr.io/thefutoneng/bitcoin:31.1-1
+docker run --rm ghcr.io/thefutoneng/bitcoin:31.1-3
 ```
 
 That works with no arguments and no mount — it runs mainnet against an anonymous
@@ -219,7 +259,7 @@ volume. Everything below is about doing something more deliberate than that.
 prepends to whatever you pass, so this keeps its datadir:
 
 ```bash
-docker run -v bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.1-1 -txindex=1
+docker run -v bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.1-3 -txindex=1
 ```
 
 Both remain overridable, because Bitcoin Core takes the last duplicate on the
@@ -241,11 +281,11 @@ it. `bitcoind` runs on its own defaults until you provide one. Two ways:
 ```bash
 # 1. inside the data volume — read automatically, no flag needed
 docker run -v ./bitcoin.conf:/data/bitcoin.conf:ro -v bitcoin-data:/data \
-  ghcr.io/thefutoneng/bitcoin:31.1-1
+  ghcr.io/thefutoneng/bitcoin:31.1-3
 
 # 2. anywhere else, named explicitly
 docker run -v ./conf:/etc/bitcoin:ro -v bitcoin-data:/data \
-  ghcr.io/thefutoneng/bitcoin:31.1-1 -conf=/etc/bitcoin/bitcoin.conf
+  ghcr.io/thefutoneng/bitcoin:31.1-3 -conf=/etc/bitcoin/bitcoin.conf
 ```
 
 **[`examples/bitcoin.conf`](examples/bitcoin.conf) is a commented teaching
@@ -267,7 +307,7 @@ there:
 
 ```bash
 mkdir -p /srv/bitcoin-data && chown 65532:65532 /srv/bitcoin-data
-docker run --rm -v /srv/bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.1-1
+docker run --rm -v /srv/bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.1-3
 ```
 
 Under Kubernetes, `securityContext.fsGroup: 65532` does the same job for a
@@ -280,15 +320,16 @@ give it the datadir — `--entrypoint` discards the image's own arguments:
 
 ```bash
 docker run --rm --entrypoint /usr/local/bin/bitcoin-cli \
-  -v bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.1-1 \
+  -v bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.1-3 \
   -datadir=/data getblockchaininfo
 ```
 
 ## Verifying what you pulled
 
-The published image carries a cosign signature and three attestations:
+The published image is a multi-arch index. The index and each image in it carry
+a cosign signature, and each image carries three attestations of its own:
 provenance, an SPDX SBOM, and a **contents manifest** accounting for every file
-in the image. Verifying is the point of all of it — none of the guarantees in
+in that image. Verifying is the point of all of it — none of the guarantees in
 this README mean anything to you unless you check them yourself.
 
 Signatures are made two ways. Keyless binds the signature to the release
@@ -300,7 +341,7 @@ cosign verify \
   --certificate-identity-regexp \
     '^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/thefutoneng/bitcoin:31.1-1
+  ghcr.io/thefutoneng/bitcoin:31.1-3
 ```
 
 The identity is not optional. Without it you would accept a signature from
@@ -319,21 +360,44 @@ the signature:
 
 ```bash
 cosign verify --key cosign.pub --insecure-ignore-tlog \
-  ghcr.io/thefutoneng/bitcoin:31.1-1
+  ghcr.io/thefutoneng/bitcoin:31.1-3
 ```
 
+Both check the signature on the index, which is what the tag points at. Each
+image inside it is signed too; `make verify-sig` checks all of them.
+
 The interesting attestation is the contents manifest. It tells you what is in
-the image and, more usefully, that nothing else is:
+the image and, more usefully, that nothing else is.
+
+Attestations are attached to **each platform's image**, not to the index — each
+platform's evidence describes different bytes, and `cosign verify-attestation`
+has no platform option — so look up the digest for your platform first:
 
 ```bash
+ref=ghcr.io/thefutoneng/bitcoin:31.1-3
+digest=$(docker buildx imagetools inspect "$ref" --format \
+  '{{range .Manifest.Manifests}}{{if eq .Platform.Architecture "arm64"}}{{.Digest}}{{end}}{{end}}')
+
 cosign verify-attestation \
   --certificate-identity-regexp \
     '^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --type https://github.com/TheFutonEng/bitcoin/predicate/bitcoind-contents/v1 \
-  ghcr.io/thefutoneng/bitcoin:31.1-1 \
-  | jq -r .payload | base64 -d | jq '.predicate.counts, .predicate.complete'
+  "ghcr.io/thefutoneng/bitcoin@${digest}" \
+  | jq -r .payload | base64 -d \
+  | jq '.predicate.image, .predicate.triple, .predicate.counts, .predicate.complete'
 ```
+
+Use `"amd64"` for the other image.
+
+**Check `.predicate.image`, not just the signature.** It must end in the digest
+you asked about. A valid signature proves who made a statement, not what the
+statement is about: the arm64 contents manifest attached to the amd64 image
+verifies perfectly well with cosign. `make verify-sig` checks this for every
+platform — the contents manifest names the digest, the SBOM describes it, and the
+provenance is for the same tarball — and fails if any attestation on an image
+describes a different one. That case was tested by attaching exactly that, with
+the real key.
 
 `"unaccounted": 0` and `complete: true` mean every file in the image was
 matched to either the digest-pinned base or the signature-verified release
@@ -348,55 +412,28 @@ they could be replaced without failing verification. Everything else, including
 both shipped binaries, is checked by content.
 
 Swap `--type` for `spdxjson` or the `bitcoind-provenance/v1` type to check the
-other two. `make verify-sig` runs all four checks at once if you would rather
-not type them — for `31.1-1`, add `ATTESTATIONS_ON=index` (below).
-
-### From `31.1-3`: one index, attestations per platform
-
-From `31.1-3` the image is a multi-arch index, linux/amd64 and linux/arm64.
-
-**`31.1-2` is public and unsigned — do not use it.** Its release pushed the
-image and then failed before signing, on a tooling bug rather than a bad
-artifact. The tag is not moved or reused; `31.1-3` is the same binaries,
-signed and attested. Verifying `31.1-2` fails, as it should.
-
-`docker pull` picks your platform, and `cosign verify` on the tag checks the
-index signature exactly as above — every image inside it is signed too.
-
-The **attestations move**. Each platform's contents manifest, SBOM and
-provenance describe different bytes, so each is attached to *that platform's*
-image digest rather than to the index. `cosign verify-attestation` has no
-platform option, so name the digest:
+other two. `make verify-sig` runs every check at once — both signing modes, the
+index and each image, all six attestations, and what each one is about:
 
 ```bash
-ref=ghcr.io/thefutoneng/bitcoin:31.1-3
-digest=$(docker buildx imagetools inspect "$ref" --format \
-  '{{range .Manifest.Manifests}}{{if eq .Platform.Architecture "arm64"}}{{.Digest}}{{end}}{{end}}')
-
-cosign verify-attestation \
-  --certificate-identity-regexp \
-    '^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --type https://github.com/TheFutonEng/bitcoin/predicate/bitcoind-contents/v1 \
-  "ghcr.io/thefutoneng/bitcoin@${digest}" \
-  | jq -r .payload | base64 -d | jq '.predicate.image, .predicate.triple, .predicate.complete'
+make verify-sig TAG=31.1-3 COSIGN_PUB=cosign.pub \
+  COSIGN_IDENTITY='^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/'
 ```
 
-**Check `.predicate.image`, not just the signature.** It must end in the digest
-you asked about. A valid signature proves who made a statement, not what the
-statement is about: the arm64 contents manifest attached to the amd64 image
-verifies perfectly well with cosign. `make verify-sig` checks this for every
-platform — the contents manifest names the digest, the SBOM describes it, and the
-provenance is for the same tarball — and fails if any attestation on an image
-describes a different one. That case was tested by attaching exactly that, with
-the real key.
+### Older releases
 
-`make verify-sig` defaults to this layout. Releases up to `31.1-1` attached
-their attestations to the index instead, so check those with
-`make verify-sig TAG=31.1-1 ATTESTATIONS_ON=index`. The layout is chosen
-explicitly rather than detected: a verifier that fell back to the old layout
-when per-platform attestations were missing would accept an image stripped of
-them.
+`31.1-1` and `31.1` are amd64-only and attached their attestations to the
+index rather than to the image, so point `verify-attestation` at the tag itself
+instead of a platform digest, and give `make verify-sig` the layout explicitly:
+
+```bash
+make verify-sig TAG=31.1-1 ATTESTATIONS_ON=index COSIGN_PUB=cosign.pub
+```
+
+The layout is chosen explicitly rather than detected: a verifier that fell back
+to the old layout when per-platform attestations were missing would accept an
+image stripped of them. `31.1-2` has nothing to verify — see
+[Earlier tags](#earlier-tags).
 
 ## Repository layout
 
@@ -471,6 +508,14 @@ rewriting. A laptop rebuilding the tag produces
 `sha256:bbd7da4f…ae2c1`, which is exactly the image manifest inside the
 published index — two machines, same bytes.
 
+**Confirmed for `31.1-3` on both platforms.** The image manifest digests were
+computed on a laptop before the tag existed, printed again by the release runner,
+and read back from the registry — three sources, one answer each:
+`linux/amd64 515c00a7…` and `linux/arm64 578650d5…`. The arm64 value was
+cross-built on amd64 both times, and the release also proved that the published
+arm64 image has exactly the files of the one that booted on native arm64
+hardware.
+
 **`31.1` predates this and cannot match.** It was built without timestamp
 rewriting, so its files carry the wall-clock time of that build. The check says
 so rather than passing quietly.
@@ -498,10 +543,10 @@ what happened on the v31.1-1 release, and is why the flag is there.
   keyring, injected pin drift, an unwritable datadir, an unreadable image, a
   swapped image at the same tag — have each been shown to fail closed by hand,
   but those proofs are ad hoc rather than runnable, so nothing re-checks them.
-- **arm64 is built and tested but not yet published.** CI runs the whole chain
-  on a native arm64 runner — smoke, config tests, binary and contents
-  verification, and the reproducible digest — but every published tag so far is
-  amd64 only. The first multi-arch release will be `31.1-3`.
+- **arm64 is tested natively, but only in CI and at release time.** Every pull
+  request and every release boots the arm64 image on a native arm64 runner. The
+  scripts will verify an arm64 image from an amd64 machine — binaries, contents,
+  signatures, reproducibility — but cannot *run* it there.
 - **The published *index* digest is not reproducible, and cannot be.** The image
   inside it is. See "Reproducible builds" above; the distinction is real and the
   index digest is the one you pin.

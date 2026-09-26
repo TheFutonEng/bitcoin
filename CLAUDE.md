@@ -602,17 +602,14 @@ make verify-contents 1660 base + 2 verified + 2 generated = 1664, 0 UNACCOUNTED
 
 ### Do these next
 
-**Read this before picking something up.** Publishing and proving are finished:
-v31.1-1 is out, signed both ways, fully attested, and reproducible from a second
-machine. What remains is in a deliberate order, and the order matters more than
-it looks.
+**Read this before picking something up.** Publishing, proving and arm64 are
+finished: v31.1-3 is out as a linux/amd64 + linux/arm64 index, signed both ways,
+every image attested, and both platforms reproducible from a second machine.
+What remains is in a deliberate order, and the order matters more than it looks.
 
-1. **arm64** (in *Everything else* below). Take this first. It is the last open
-   item that changes what the artifact *is* rather than what is proven about it,
-   and everything downstream inherits the decision. Built, tested and
-   reproducible in CI as of 2026-09-25; what remains is the release — see the
-   arm64 item for the step list.
-2. **STIG/hardening evidence.** Take this *after* arm64, not before. The
+1. ~~**arm64**~~ — **done 2026-09-25**, released as `31.1-3`. See the arm64
+   item in *Everything else*.
+2. **STIG/hardening evidence. Take this next.** It waited on arm64: the
    evidence is scanner output against a specific image, so producing it and then
    changing the architecture — or moving to a multi-arch index — invalidates it
    and you do the work twice. That ordering is the whole reason arm64 goes
@@ -623,8 +620,9 @@ it looks.
 4. **Rebuild-from-published-image.** Closes the real operational gap: a
    distroless CVE when upstream has withdrawn the release.
 
-Items 1 and 2 are sequenced. Items 3 and 4 are independent of everything and can
-be picked up at any point.
+Item 2 is next, and the scan target is `31.1-3` — both platforms, since the
+index is what consumers pull. Items 3 and 4 are independent of everything and
+can be picked up at any point.
 
 - [x] **`verify-sig` now verifies all three predicates.** Done 2026-09-15. It
       checked only provenance while `attest` attached three, so the contents
@@ -907,8 +905,8 @@ be picked up at any point.
 
 ### Everything else
 
-- [ ] **arm64. Do this before the STIG pass** — see the ordering note at the top
-      of *Do these next*. It is the last open item that changes what the artifact
+- [x] **arm64 — released as `31.1-3`, 2026-09-25.** Kept below as the record
+      of how it was done; the ordering note at the top of *Do these next*. It is the last open item that changes what the artifact
       is, and scanner evidence produced against amd64 does not survive an
       architecture change.
 
@@ -1018,6 +1016,43 @@ be picked up at any point.
       never re-tagged. `REVISION` 3, same binaries, carries the fix; the
       canonical digests move again, for the label alone.
 
+      **v31.1-3 released — 2026-09-25, all green on the first run.**
+
+      ```
+      ghcr.io/thefutoneng/bitcoin:31.1-3
+      index        sha256:073762e5a5ce…8082f5
+      linux/amd64  sha256:515c00a7497b…1600d7   <- reproducible
+      linux/arm64  sha256:578650d5ff2d…ae6f5b8  <- reproducible
+      ```
+
+      Verified from a clean shell with an empty `DOCKER_CONFIG`, as an
+      outsider: the per-platform digests computed on a laptop **before the tag
+      existed**, the runner's job summary and the registry all agree — three
+      sources, one answer per platform. `make verify-sig` in both modes: 22
+      checks, including that each attestation describes its own image. The
+      keyless certificate names exactly `release.yml@refs/tags/v31.1-3`.
+      `verify-repro-published` passes for both platforms, and the README's
+      consumer command, run verbatim, returns the arm64 contents manifest
+      naming the arm64 digest.
+
+      One scare worth recording so nobody repeats it: `docker pull --platform
+      linux/arm64` followed by `docker image inspect` **by tag** reported
+      `linux/amd64`. That is the containerd store showing the host's variant of
+      a multi-platform tag, not a wrong pull — `docker image inspect --platform
+      linux/arm64` returns `578650d5…`, and `bitcoind` copied out of the arm64
+      variant is an aarch64 ELF. Inspect by platform or by digest.
+
+      **Decided 2026-09-25: `31.1-2` stays, unsigned, and is documented.** It
+      is tagged, public, and verifies as nothing — "no signatures found" in
+      both modes — while its bytes are correct (see above). Deleting it was
+      considered and rejected: it cannot be undone, and it would break anyone
+      who already pinned it. The README says plainly in the status block and
+      under *Earlier tags* not to use it. Same principle as the keyless-only
+      `sha256:35c21e69…` from the v31.1 release: a published artifact is not
+      hidden after the fact; it is explained. Do not re-open this as a
+      security question — an unsigned image that fails verification is the
+      verification working.
+
       **Rehearse on a classic store next time.** Every image-store bug in this
       repo passed on this laptop first. A classic daemon is one command away
       and the scripts only need `DOCKER_HOST`:
@@ -1093,15 +1128,16 @@ be picked up at any point.
       carrying the digest in its `org.opencontainers.image.base.name` label is
       resolved and fully accounted for by `verify-contents.sh` with no `BASE=`
       override.
-- [ ] **STIG/hardening pass. Do arm64 first** — see the ordering note at the top
-      of *Do these next*. The evidence is scanner output against a specific
-      image, so producing it and then changing the architecture, or moving to a
-      multi-arch index, means doing the work twice.
+- [ ] **STIG/hardening pass — next, now that arm64 is released.** The evidence
+      is scanner output against a specific image, which is why it waited: the
+      target is `31.1-3`, and it is a multi-arch index, so the evidence covers
+      **both** platforms' images, by digest (amd64 `515c00a7…`, arm64
+      `578650d5…`).
 
       Distroless gets most of this for free, but the scanner wants explicit
       evidence. This is why the repo exists — do not let it slip behind the
-      plumbing tasks. The plumbing is finished as of 2026-09-23, so "after the
-      plumbing" now means "after arm64", and nothing else.
+      plumbing tasks. The plumbing and arm64 are both finished, so nothing is
+      ahead of it.
 - [x] **Test that Dockerfile and verify.sh agree — done 2026-09-21.**
       `check-pins.sh` had covered the *values* since 2026-09-12; `make test`
       now covers the *logic*. `tests/test-threshold.sh` splits the real
