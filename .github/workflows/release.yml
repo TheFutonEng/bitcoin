@@ -179,6 +179,11 @@ jobs:
       # On this platform's own hardware: the binaries load and the node starts.
       - name: Smoke test
         run: make smoke VERSION="${VERSION}"
+      # Every library the loader asks for, through a whole node lifecycle, on
+      # this platform's own hardware. check-runtime-deps (part of `make build`)
+      # proved it statically; this proves it by execution.
+      - name: Runtime library trace
+        run: make test-runtime-libs VERSION="${VERSION}"
       - name: Verify image binaries
         run: make verify-image VERSION="${VERSION}"
       - name: Verify image contents

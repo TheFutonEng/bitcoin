@@ -23,13 +23,26 @@ ARG BITCOIN_VERSION=31.1
 # agree, exactly as it does for MIN_GOOD_SIGS. The default matters: a direct
 # `docker build` that forgets the build arg still produces a correctly labelled
 # image rather than one claiming to be "31.1-".
-ARG IMAGE_REVISION=3
+ARG IMAGE_REVISION=4
 # Invariant 4: pinned by digest, never by tag. This digest IS the `:nonroot`
-# variant of cc-debian12 as of 2026-09-12 — the name no longer says so, which
-# is the cost of pinning. It is an OCI image index (amd64, arm64/v8, arm/v7,
-# s390x), so multi-arch still works. To bump: re-resolve the tag, update here
-# AND in the Makefile, then re-run `make smoke verify-image verify-contents`.
-ARG RUNTIME_BASE=gcr.io/distroless/cc-debian12@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
+# variant of base-nossl-debian12 as of 2026-09-26 (config User 65532, checked
+# when pinned) — the name no longer says so, which is the cost of pinning. It
+# is an OCI image index (amd64, arm64/v8, arm/v7, s390x, ppc64le). To bump:
+# re-resolve the tag, update here AND in the Makefile, then run
+# `make check-runtime-deps smoke verify-image verify-contents test`.
+#
+# base-nossl, not cc. It was cc-debian12 until 31.1-4. The official binaries
+# need glibc and nothing else — upstream's own release build enforces that
+# (contrib/guix/symbol-check.py) — so cc's libstdc++6, libgcc-s1, libgomp1,
+# gcc-12-base and base's libssl3 were five packages nothing loaded, and 11 of
+# the image's 34 scanner findings. Measured before switching: NEEDED lists only
+# libc/libm/libpthread/ld-linux on both arches, no import of dlopen,
+# pthread_cancel, pthread_exit or backtrace (glibc's routes to loading
+# libgcc_s), and under LD_DEBUG a full node lifecycle requested only
+# libc/libm/libpthread, on cc as well. Two gates keep it true for future
+# releases: scripts/check-runtime-deps.sh (static, before the build) and
+# tests/test-runtime-libs.sh (runtime, native on each arch in CI).
+ARG RUNTIME_BASE=gcr.io/distroless/base-nossl-debian12@sha256:be40c00dfabd86576d92666e87e406714d5618342de1a0c213ad232de255172e
 # Pinned by digest, like the runtime base. This stage is where signatures are
 # actually verified, so a compromised or silently-updated base here is worse
 # than one in the runtime image: a `gpgv` that emits fabricated VALIDSIG lines
@@ -149,7 +162,9 @@ RUN set -eux; \
 # Verified 2026-09-13 against the real 31.1 tarball: it ships bin/, libexec/ and
 # share/ but NO lib/, and `bitcoind` is a standalone binary linking only glibc —
 # no libbitcoinkernel.so. Nothing from libexec/ is needed either. If a future
-# release changes that, `make smoke` is what catches it.
+# release changes that, `make check-runtime-deps` catches it before the build —
+# the runtime base is glibc-only, so any other library is a named failure — and
+# tests/test-runtime-libs.sh catches anything loaded lazily at runtime.
 RUN set -eux; \
     mkdir -p /out/bin /unpack /out/datadir; \
     tar -xzf "$(cat /stage/tarball-name.txt)" \

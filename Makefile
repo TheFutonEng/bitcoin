@@ -16,7 +16,7 @@ VERSION       ?= 31.1
 # Starts at 1, not 0, which is what Debian does and what `31.1-1` should mean:
 # the first packaging of 31.1. Keep in sync with ARG IMAGE_REVISION in the
 # Dockerfile — check-pins.sh asserts it, the same way it does MIN_GOOD_SIGS.
-REVISION      ?= 3
+REVISION      ?= 4
 # PLATFORM selects the architecture; TRIPLE follows from it and is not meant to
 # be set on its own. The Dockerfile makes the same mapping from TARGETARCH — it
 # has to, because one multi-platform build cannot take a per-platform build arg
@@ -57,7 +57,7 @@ IMAGE         ?= $(REGISTRY)/bitcoin
 # changing, which is precisely what REVISION exists to express.
 TAG           ?= $(VERSION)-$(REVISION)
 # Pinned by digest (invariant 4). Keep in sync with the ARG in the Dockerfile.
-RUNTIME_BASE  ?= gcr.io/distroless/cc-debian12@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
+RUNTIME_BASE  ?= gcr.io/distroless/base-nossl-debian12@sha256:be40c00dfabd86576d92666e87e406714d5618342de1a0c213ad232de255172e
 MIN_GOOD_SIGS ?= 6
 # The buildkit used for reproducibility checks and for the release push, pinned
 # by digest for the same reason as the base images (invariant 5). It is a build
@@ -111,7 +111,7 @@ BUILD_DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>
 
 export SOURCE_DATE_EPOCH
 
-.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold print-buildkit-image print-image-ref print-version print-revision print-triple print-platforms platform-ref verify-published repro-digest repro-digest-write verify-repro verify-repro-published clean
+.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check check-runtime-deps build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold test-runtime-libs print-buildkit-image print-image-ref print-version print-revision print-triple print-platforms platform-ref verify-published repro-digest repro-digest-write verify-repro verify-repro-published clean
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s$$'\t'
@@ -142,7 +142,14 @@ verify: check-pins ## Re-verify what is already in upstream/
 cross-check: ## Second opinion on the signature threshold from Core's verify.py (needs network)
 	MIN_GOOD_SIGS=$(MIN_GOOD_SIGS) scripts/cross-check-verify-py.sh $(VERSION) $(TRIPLE)
 
-build: verify ## Build the image (hermetic — no network in the build)
+# Before any build, not after: a base that cannot load the binaries should fail
+# with the library named, not produce an image that dies on start. Runs for the
+# PLATFORM being built, against the RUNTIME_BASE being built on, so a base
+# override or a new Bitcoin Core version is checked by the same target.
+check-runtime-deps: ## Prove the runtime base provides every library the shipped binaries need
+	RUNTIME_BASE=$(RUNTIME_BASE) scripts/check-runtime-deps.sh $(VERSION) $(TRIPLE) $(PLATFORM)
+
+build: verify check-runtime-deps ## Build the image (hermetic — no network in the build)
 	docker buildx build \
 	  --platform $(PLATFORM) \
 	  --network=none \
@@ -332,7 +339,7 @@ verify-published: ## Verify PLATFORM's image in the pushed index by digest; writ
 #
 # `test` is the aggregate: as the negative-test suite grows, add targets here and
 # CI picks them up without another workflow edit.
-test: test-threshold test-config ## Run every test
+test: test-threshold test-config test-runtime-libs ## Run every test
 
 test-threshold: ## Prove BOTH threshold implementations agree and fail closed
 	tests/test-threshold.sh $(VERSION) $(TRIPLE)
@@ -340,6 +347,11 @@ test-threshold: ## Prove BOTH threshold implementations agree and fail closed
 # Needs a built image, unlike test-threshold which builds what it needs.
 test-config: ## Prove config and the datadir reach the container, and the example is not stale
 	tests/test-config.sh $(IMAGE):$(TAG)
+
+# Needs a built image, like test-config. Runs natively on each architecture in
+# CI and in the release's preflight — the only place arm64 is EXECUTED.
+test-runtime-libs: ## Prove a full node lifecycle loads nothing beyond glibc
+	tests/test-runtime-libs.sh $(IMAGE):$(TAG)
 
 # bitcoin/bitcoin unpacks the release tarball into /opt and puts it on PATH,
 # rather than installing into /usr/local/bin as we do. Verified against
