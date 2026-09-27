@@ -213,6 +213,8 @@ scripts/verify-reproducible.sh   prove this commit builds the same image bytes a
                                  (uses a docker-container builder on a pinned buildkit)
 tests/test-threshold.sh          negative tests: both threshold gates, same fixtures, must agree
 tests/test-config.sh             config and the datadir actually reach the container
+tests/test-runtime-libs.sh       full node lifecycle under LD_DEBUG: nothing loaded beyond glibc
+scripts/check-runtime-deps.sh    before every build: the base has every library the binaries NEED
 examples/bitcoin.conf            commented teaching file AND the fixture test-config.sh runs
 reproducible-digest.txt          canonical image manifest digest per platform; CI checks each
 predicates/                      gitignored: per-platform attestation inputs, from verify-published
@@ -238,6 +240,11 @@ make check-pins
 make fetch VERSION=31.1          # downloads, verifies, cross-checks against verify.py
 git add upstream/SHA256SUMS upstream/SHA256SUMS.asc
 git commit -m "upstream: bitcoin core 31.1 sums"  # the tarball is gitignored
+# Before building a NEW Core version: diff upstream's contract for what the
+# binaries may link, since the runtime base provides exactly that and no more.
+#   contrib/guix/symbol-check.py, ELF_ALLOWED_LIBRARIES, old tag vs new tag.
+# check-runtime-deps (run by `make build`) catches an actual change; this is
+# the early warning, and the place to read why.
 make build smoke verify-image verify-contents        # per PLATFORM
 make push                        # every PLATFORMS entry, one index, mode=max + SBOM
 make verify-published PLATFORM=linux/amd64           # by digest; writes predicates/
@@ -443,6 +450,19 @@ to fix is in `release.yml` itself, re-running from the old tag re-runs the bug.
   `tests/test-config.sh` keeps it honest.
 - Ports: 8332 RPC, 8333 P2P, 28332/28333 ZMQ.
 - Ships `bitcoind` and `bitcoin-cli` only.
+- **Runtime base is distroless `base-nossl-debian12`** from 31.1-4 (it was
+  `cc-debian12`): glibc and nothing else a program can link. Justified by
+  upstream's own release contract — `contrib/guix/symbol-check.py` lets
+  `bitcoind` link only libc, libm, libpthread and the loader — and held true by
+  two gates: `check-runtime-deps.sh` before every build, `test-runtime-libs.sh`
+  natively per arch. If a Core release ever needs `libgcc_s` or `libstdc++`,
+  the answer is back to `cc-debian12`, **not** copying libraries in, which
+  would put packages outside any SBOM we can attribute.
+- **`-*notify` options do not work, silently.** `-blocknotify`,
+  `-walletnotify`, `-alertnotify`, `-startupnotify` and `-shutdownnotify` run
+  through `system()`, which needs `/bin/sh`; neither base has one. The node
+  logs `runCommand error: … returned 32512` and carries on. Measured
+  2026-09-26 on 31.1-3. The README documents the ZMQ / RPC alternatives.
 - Provenance breadcrumbs at `/usr/local/share/bitcoind-provenance/`, plus a
   cosign attestation. **These two files are trusted by path, not by hash** —
   their content is build-specific, so `verify-contents.sh` does not check it.
@@ -620,8 +640,9 @@ What remains is in a deliberate order, and the order matters more than it looks.
 4. **Rebuild-from-published-image.** Closes the real operational gap: a
    distroless CVE when upstream has withdrawn the release.
 
-Item 2 is next, and the scan target is `31.1-3` — both platforms, since the
-index is what consumers pull. Items 3 and 4 are independent of everything and
+Item 2 is under way; its scan target is `31.1-4` — both platforms, since the
+index is what consumers pull — because the first thing the scan found was a
+base worth changing. See the STIG item. Items 3 and 4 are independent of everything and
 can be picked up at any point.
 
 - [x] **`verify-sig` now verifies all three predicates.** Done 2026-09-15. It
@@ -1119,6 +1140,7 @@ can be picked up at any point.
       `make smoke` is what catches it if a future release adds a shared library.
 - [x] **Pin the runtime base by digest.** Done 2026-09-12.
       `gcr.io/distroless/cc-debian12@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f`
+      (Replaced by `base-nossl-debian12` in 31.1-4 — see the STIG item.)
       in both the Dockerfile `ARG` and the Makefile. That digest is an OCI image
       **index** (amd64, arm64/v8, arm/v7, s390x), so multi-arch survives the pin
       — which the arm64 task will need. It is the `:nonroot` variant; the name no
@@ -1138,6 +1160,70 @@ can be picked up at any point.
       evidence. This is why the repo exists — do not let it slip behind the
       plumbing tasks. The plumbing and arm64 are both finished, so nothing is
       ahead of it.
+
+      **Decided 2026-09-26:** evidence is a CVE scan plus the CIS Docker
+      Benchmark's image-level controls; **Grype and Trivy both**, disagreements
+      reported; results as a signed attestation per platform at release plus a
+      **scheduled rescan** of published images; **report only** — nothing
+      blocks a release. Scanners pinned to hashes taken from checksum files
+      whose cosign signatures were verified against each vendor's release
+      identity: grype 0.119.0, trivy 0.74.0. (Grype signs from
+      `release.yaml@refs/heads/main` — Anchore releases by dispatch on main —
+      so its identity is exact, not a tag regexp.)
+
+      **Baseline, 31.1-3, both arches identical: the scanners agree on WHAT and
+      disagree on HOW BAD.** Grype: 2 Critical, 6 High. Trivy: none. Same eight
+      CVEs, in libc6 and libssl3. Debian had not rated them, so Grype fell back
+      to NVD (9.8, Critical) and Trivy to other distros (Red Hat, Ubuntu, Alma:
+      Medium). Neither is Debian's view, and either can change without the
+      image changing — why severity makes a poor gate, and why two scanners
+      were worth having: one alone would have given a confident, arbitrary
+      answer.
+
+      **The scan's first result was a base change — 31.1-4 moves to
+      `base-nossl-debian12`.** libssl3, libstdc++6, libgcc-s1, libgomp1 and
+      gcc-12-base were in the image and never loaded: 11 of 34 findings,
+      including a Critical. Bumping `cc` would not have helped; its `:nonroot`
+      tag still resolved to the pinned `9dac0a79…` with the unfixed libssl3.
+      What remains is libc6 (unavoidable in any glibc image, mostly deferred by
+      Debian) and a tzdata fix distroless has not picked up. 1664 → 1627 files
+      on amd64, 1663 → 1626 on arm64.
+
+      Why it is safe, all measured, none inferred from `--version`:
+
+      - **Upstream's contract.** `contrib/guix/symbol-check.py` at v31.1 lets
+        `bitcoind` link only libc, libpthread, libm and the loader. A Guix
+        release build **fails** otherwise. A second agent consulted during the
+        decision said the list still permits a dynamic `libgcc_s`; for v31.1
+        it does not — read the file, do not trust either of us.
+      - **The binaries honour it**, both arches: NEEDED is those four; no
+        import of `dlopen`, `pthread_cancel`, `pthread_exit` or `backtrace` —
+        the only ways glibc itself loads `libgcc_s` — and no `libgcc_s` string.
+      - **At runtime, under `LD_DEBUG=libs`**: startup, RPC, wallet, a spend,
+        mining, three RPCs that throw, a hostname resolved through NSS, `stop`,
+        restart, SIGTERM — only libc/libm/libpthread requested, on **both**
+        bases; `libgcc_s` never, even on `cc` where it was available. glibc
+        2.36 has the files/dns NSS backends built in, so resolution loads
+        nothing either.
+
+      **Two gates keep it true, both mutation-tested:**
+      `scripts/check-runtime-deps.sh` (before every `make build`) and
+      `tests/test-runtime-libs.sh` (`make test`; natively per arch in CI and in
+      release preflight — arm64's only proof by execution). Mutants: NEEDED
+      `libgcc_s` / `libstdc++` added with patchelf, and a real C program
+      calling `pthread_exit` — each fails on base-nossl and passes on cc, so
+      the check judges the base rather than rejecting the unfamiliar;
+      `LD_PRELOAD=libgcc_s` on both bases, `LD_DEBUG` removed, and the NSS host
+      removed — each fails with its reason.
+
+      Three corrections the mutation testing forced, all worth knowing:
+      `has_lib` first built a regex from the library name, and `++` in
+      `libstdc++.so.6` is a quantifier — it called cc's libstdc++ missing. The
+      runtime test died silently under `pipefail` when the trace was empty,
+      instead of saying so. And the first ad-hoc trace claimed "a wallet send"
+      that never happened: regtest refuses `sendtoaddress` without
+      `-fallbackfee`, and that script never checked exit codes. The committed
+      test checks every step, which is how it was noticed.
 - [x] **Test that Dockerfile and verify.sh agree — done 2026-09-21.**
       `check-pins.sh` had covered the *values* since 2026-09-12; `make test`
       now covers the *logic*. `tests/test-threshold.sh` splits the real

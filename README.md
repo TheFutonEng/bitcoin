@@ -250,6 +250,12 @@ volume. Everything below is about doing something more deliberate than that.
   convention, not a Bitcoin Core default.
 - Ships `bitcoind` and `bitcoin-cli` only. No shell, no package manager, no
   entrypoint script, no in-container `chown`.
+- Runtime base is distroless **`base-nossl-debian12`** from `31.1-4`: glibc,
+  CA certificates, tzdata and the files under `/etc` — no OpenSSL and no C++
+  runtime, because the official binaries load neither. Earlier tags use
+  `cc-debian12`. Every build proves the base provides each library the binaries
+  need, and CI proves a full node lifecycle loads nothing else, on both
+  architectures.
 - Provenance breadcrumbs at `/usr/local/share/bitcoind-provenance/`, plus a
   cosign attestation.
 
@@ -314,6 +320,36 @@ Under Kubernetes, `securityContext.fsGroup: 65532` does the same job for a
 PersistentVolume.
 
 ### There is no shell
+
+Five Bitcoin Core options run a command through `/bin/sh`, and **none of them
+works in this image**: `-blocknotify`, `-walletnotify`, `-alertnotify`,
+`-startupnotify` and `-shutdownnotify`. Core hands the string to `system()`,
+which needs a shell, and there is none. **This fails quietly** — the node runs
+normally, RPC answers, the container stays healthy, and the only trace is one
+log line per event:
+
+```
+[warning] runCommand error: system(...) returned 32512
+```
+
+(32512 is exit status 127, "command not found", shifted into the high byte.) A
+`bitcoin.conf` carried over from a conventional install keeps working in every
+other respect, so check it for these five. A shell alone would not fix them
+anyway: hooks are usually scripts calling `curl` or `python`, and there are
+none of those either. The container-native equivalents:
+
+| Instead of | Use |
+|---|---|
+| `-blocknotify` | ZMQ `-zmqpubhashblock` / `-zmqpubrawblock`, or long-poll `waitfornewblock` over RPC |
+| `-walletnotify` | ZMQ `-zmqpubrawtx` filtered for your wallet, or poll `listsinceblock` — neither is a drop-in: `walletnotify` fires only for your wallet |
+| `-alertnotify` | poll `warnings` in `getblockchaininfo` / `getnetworkinfo`, or watch the log. Worth doing: it is how a node says it needs upgrading |
+| `-startupnotify`, `-shutdownnotify` | the container runtime: Docker events, a healthcheck, Kubernetes probes |
+
+ZMQ is compiled in and the image exposes `28332`/`28333`; publishers bind only
+when you pass the `-zmqpub*` options. `-signer` is a different case — Core runs
+external signers directly, not through a shell — but a signer such as HWI needs
+a Python interpreter the image does not have.
+
 
 `docker exec ... sh` will not work. Run `bitcoin-cli` as its own entrypoint, and
 give it the datadir — `--entrypoint` discards the image's own arguments:
@@ -456,6 +492,8 @@ scripts/sign-image.sh            sign the index and its images; attest each plat
 scripts/verify-signatures.sh     prove signatures and attestations, and what each is about
 tests/test-threshold.sh          negative tests for the signature threshold
 tests/test-config.sh             prove config and the datadir reach the container
+tests/test-runtime-libs.sh       prove a full node lifecycle loads nothing beyond glibc
+scripts/check-runtime-deps.sh    prove the runtime base has every library the binaries need
 examples/bitcoin.conf            commented teaching file, and the fixture the test runs
 .github/workflows/ci.yml         runs the whole chain on every pull request, per platform
 .github/workflows/release.yml    tag-triggered: boot each platform natively, then publish
