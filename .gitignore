@@ -10,6 +10,8 @@ contents-manifest.json
 sbom.spdx.json
 # Per-platform predicates for a multi-arch release (make verify-published).
 predicates/
+# Scanner binaries installed by scripts/install-scanners.sh.
+.tools/
 keys/trusted-fingerprints.txt.candidate
 
 # Private signing keys. cosign.pub is committed on purpose — consumers need it —

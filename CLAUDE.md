@@ -215,6 +215,8 @@ tests/test-threshold.sh          negative tests: both threshold gates, same fixt
 tests/test-config.sh             config and the datadir actually reach the container
 tests/test-runtime-libs.sh       full node lifecycle under LD_DEBUG: nothing loaded beyond glibc
 scripts/check-runtime-deps.sh    before every build: the base has every library the binaries NEED
+scripts/install-scanners.sh      grype + trivy pinned by hash; --verify-pins re-derives pins from signed checksums
+scripts/scan-image.sh            scan one platform image with both; report agreement, disagreement, blind spots
 examples/bitcoin.conf            commented teaching file AND the fixture test-config.sh runs
 reproducible-digest.txt          canonical image manifest digest per platform; CI checks each
 predicates/                      gitignored: per-platform attestation inputs, from verify-published
@@ -640,9 +642,9 @@ What remains is in a deliberate order, and the order matters more than it looks.
 4. **Rebuild-from-published-image.** Closes the real operational gap: a
    distroless CVE when upstream has withdrawn the release.
 
-Item 2 is under way; its scan target is `31.1-4` — both platforms, since the
-index is what consumers pull — because the first thing the scan found was a
-base worth changing. See the STIG item. Items 3 and 4 are independent of everything and
+Item 2 is under way against `31.1-4` (released 2026-09-27, on
+`base-nossl-debian12`): scanning is in; the CIS image controls, attaching the
+scan to releases, and the scheduled rescan remain. See the STIG item. Items 3 and 4 are independent of everything and
 can be picked up at any point.
 
 - [x] **`verify-sig` now verifies all three predicates.** Done 2026-09-15. It
@@ -1224,6 +1226,41 @@ can be picked up at any point.
       that never happened: regtest refuses `sendtoaddress` without
       `-fallbackfee`, and that script never checked exit codes. The committed
       test checks every step, which is how it was noticed.
+
+      **v31.1-4 released 2026-09-27 — first on `base-nossl`, green first
+      run.** Index `216f7b14…`, amd64 `5775fe33…`, arm64 `2b9efa07…`. Pre-tag
+      digests, runner summary and registry agree, per platform. The runtime
+      library trace ran 10/10 **inside the release**, on each native preflight
+      runner, before anything was pushed. Verified as an outsider: 22 checks in
+      both modes, exact keyless identity `refs/tags/v31.1-4`, both platforms
+      reproducible. The signed contents manifests name `base-nossl-debian12`
+      (1627 / 1626 files, none unaccounted) and contain **zero** libssl,
+      libstdc++, libgcc_s or libgomp files — the switch confirmed from the
+      evidence, not from the Dockerfile.
+
+      **Scanning — 2026-09-28.** `scripts/install-scanners.sh` pins grype and
+      trivy per arch by hash; `--verify-pins` re-derives every pin from the
+      vendor-signed checksums (both signatures, all four hashes — and a
+      one-character pin change and a wrong signing identity each fail it).
+      `scripts/scan-image.sh` / `make scan` scans one platform **by digest**:
+      Grype the SBOM, Trivy the image. It refuses an SBOM that does not name
+      the digest, fails on a scanner that errors or inventories nothing, and
+      writes no report when it fails — four mutants, each refused.
+
+      Baseline, `31.1-4`, both platforms identical: both tools saw the **same
+      six packages**; 23 findings, 22 seen by both. Grype 1 Critical / 3 High,
+      Trivy none — 13 severity disagreements, all libc6. The one Trivy-only
+      finding is `DLA-4792-1`, a Debian LTS tzdata advisory: Trivy tracks
+      DLAs, Grype does not, and nothing in Grype's output relates the two —
+      a genuine coverage difference, correctly reported, not an ID mismatch.
+      It is also the only fixable finding (tzdata `2026c`, not yet in
+      distroless). `31.1-3` had 34 findings and 2 Critical / 6 High by Grype;
+      the whole difference is the packages the base switch removed.
+
+      Remaining for this item: the CIS image-level controls, attaching
+      `scan-report.json` per platform at release, and the scheduled rescan.
+      `make scan` already writes the report beside the other predicates, where
+      the release will pick it up.
 - [x] **Test that Dockerfile and verify.sh agree — done 2026-09-21.**
       `check-pins.sh` had covered the *values* since 2026-09-12; `make test`
       now covers the *logic*. `tests/test-threshold.sh` splits the real
