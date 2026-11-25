@@ -8,25 +8,27 @@ manifest of everything inside it.
 Scope is deliberately narrow: this repo **builds, verifies, and publishes an
 image**. It says nothing about how you deploy or operate a node.
 
-> **Status: published, multi-arch.** `ghcr.io/thefutoneng/bitcoin:31.1-3` is
+> **Status: published, multi-arch.** `ghcr.io/thefutoneng/bitcoin:31.1-4` is
 > live for **linux/amd64 and linux/arm64** as one index — `docker pull` picks
-> your platform. The index and both images are signed two ways — keyless and
-> with a published key pair — and each image carries its own three
-> attestations: provenance, SBOM, and a contents manifest accounting for every
-> file in it. All of it verifies from a clean machine using the commands in
-> [Verifying what you pulled](#verifying-what-you-pulled), and each image is
-> reproducible: rebuild the tag yourself and you get the same bytes, on either
-> platform.
+> your platform. It runs on distroless `base-nossl-debian12`: glibc and nothing
+> else, because the official binaries load nothing else. The index and both
+> images are signed two ways — keyless and with a published key pair — and each
+> image carries its own three attestations: provenance, SBOM, and a contents
+> manifest accounting for every file in it. All of it verifies from a clean
+> machine using the commands in [Verifying what you pulled](#verifying-what-you-pulled),
+> and each image is reproducible: rebuild the tag yourself and you get the same
+> bytes, on either platform.
 >
 > ```
-> ghcr.io/thefutoneng/bitcoin@sha256:073762e5a5cec19ac81682ac49f6b10707af13374e2b98314595d301bd8082f5
+> ghcr.io/thefutoneng/bitcoin@sha256:216f7b14a1421a32271b3246ba892bec2434f807be926d47ff6d1ac675776512
 > ```
 >
 > Pin that digest.
 >
-> Three earlier tags exist, all Bitcoin Core 31.1: `:31.1` and `:31.1-1` are
-> signed, amd64-only images from before multi-arch, and **`:31.1-2` is unsigned
-> — do not use it**. See [Earlier tags](#earlier-tags) for what each one is.
+> Four earlier tags exist, all Bitcoin Core 31.1: `:31.1-3` is signed and
+> multi-arch on the older `cc-debian12` base, `:31.1` and `:31.1-1` are signed,
+> amd64-only images from before multi-arch, and **`:31.1-2` is unsigned — do not
+> use it**. See [Earlier tags](#earlier-tags) for what each one is.
 
 ## Why this exists
 
@@ -149,7 +151,7 @@ Run `make help` for the full target list.
 Tags are `<bitcoin version>-<image revision>`:
 
 ```
-ghcr.io/thefutoneng/bitcoin:31.1-3
+ghcr.io/thefutoneng/bitcoin:31.1-4
                             ^^^^ ^
                             |    image revision
                             Bitcoin Core version
@@ -176,7 +178,7 @@ registry and are not part of the artifact; the label is what survives a
 **Bare version tags are not published.** There is no `:31.1` being maintained —
 it would be ambiguous the moment the image changes without the binaries
 changing, which is exactly what the revision exists to express. Pin a digest for
-anything real; use `31.1-3` when you want a name.
+anything real; use `31.1-4` when you want a name.
 
 ### Earlier tags
 
@@ -186,7 +188,8 @@ and this is what each of them is.
 
 | Tag | Platforms | Signed | Notes |
 |---|---|---|---|
-| `31.1-3` | amd64, arm64 | yes, both ways | **current** |
+| `31.1-4` | amd64, arm64 | yes, both ways | **current** — `base-nossl-debian12` |
+| `31.1-3` | amd64, arm64 | yes, both ways | `cc-debian12` base: libssl3 and the C++ runtime present, unused |
 | `31.1-2` | amd64, arm64 | **no** | release failed after the push — below |
 | `31.1-1` | amd64 | yes, both ways | attestations on the index, not per image |
 | `31.1`   | amd64 | yes, both ways | before this tagging scheme — below |
@@ -197,7 +200,7 @@ and this is what each of them is.
 failed **before signing it**, so the tag points at an image with no signatures
 and no attestations. `cosign verify` against it fails, and it should: there is
 nothing to verify, and an unsigned image is exactly what the verification steps
-exist to turn away. Use `31.1-3`.
+exist to turn away. Use the current tag.
 
 The failure was in the release tooling, not the image. Checking each platform
 out of the registry, the tooling asked the runner's Docker for the arm64 variant
@@ -233,7 +236,7 @@ it, and that is worth more than closing a one-image gap in the numbering.
 ## Using the image
 
 ```bash
-docker run --rm ghcr.io/thefutoneng/bitcoin:31.1-3
+docker run --rm ghcr.io/thefutoneng/bitcoin:31.1-4
 ```
 
 That works with no arguments and no mount — it runs mainnet against an anonymous
@@ -265,7 +268,7 @@ volume. Everything below is about doing something more deliberate than that.
 prepends to whatever you pass, so this keeps its datadir:
 
 ```bash
-docker run -v bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.1-3 -txindex=1
+docker run -v bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.1-4 -txindex=1
 ```
 
 Both remain overridable, because Bitcoin Core takes the last duplicate on the
@@ -287,11 +290,11 @@ it. `bitcoind` runs on its own defaults until you provide one. Two ways:
 ```bash
 # 1. inside the data volume — read automatically, no flag needed
 docker run -v ./bitcoin.conf:/data/bitcoin.conf:ro -v bitcoin-data:/data \
-  ghcr.io/thefutoneng/bitcoin:31.1-3
+  ghcr.io/thefutoneng/bitcoin:31.1-4
 
 # 2. anywhere else, named explicitly
 docker run -v ./conf:/etc/bitcoin:ro -v bitcoin-data:/data \
-  ghcr.io/thefutoneng/bitcoin:31.1-3 -conf=/etc/bitcoin/bitcoin.conf
+  ghcr.io/thefutoneng/bitcoin:31.1-4 -conf=/etc/bitcoin/bitcoin.conf
 ```
 
 **[`examples/bitcoin.conf`](examples/bitcoin.conf) is a commented teaching
@@ -313,7 +316,7 @@ there:
 
 ```bash
 mkdir -p /srv/bitcoin-data && chown 65532:65532 /srv/bitcoin-data
-docker run --rm -v /srv/bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.1-3
+docker run --rm -v /srv/bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.1-4
 ```
 
 Under Kubernetes, `securityContext.fsGroup: 65532` does the same job for a
@@ -356,7 +359,7 @@ give it the datadir — `--entrypoint` discards the image's own arguments:
 
 ```bash
 docker run --rm --entrypoint /usr/local/bin/bitcoin-cli \
-  -v bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.1-3 \
+  -v bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.1-4 \
   -datadir=/data getblockchaininfo
 ```
 
@@ -377,7 +380,7 @@ cosign verify \
   --certificate-identity-regexp \
     '^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/thefutoneng/bitcoin:31.1-3
+  ghcr.io/thefutoneng/bitcoin:31.1-4
 ```
 
 The identity is not optional. Without it you would accept a signature from
@@ -396,7 +399,7 @@ the signature:
 
 ```bash
 cosign verify --key cosign.pub --insecure-ignore-tlog \
-  ghcr.io/thefutoneng/bitcoin:31.1-3
+  ghcr.io/thefutoneng/bitcoin:31.1-4
 ```
 
 Both check the signature on the index, which is what the tag points at. Each
@@ -410,7 +413,7 @@ platform's evidence describes different bytes, and `cosign verify-attestation`
 has no platform option — so look up the digest for your platform first:
 
 ```bash
-ref=ghcr.io/thefutoneng/bitcoin:31.1-3
+ref=ghcr.io/thefutoneng/bitcoin:31.1-4
 digest=$(docker buildx imagetools inspect "$ref" --format \
   '{{range .Manifest.Manifests}}{{if eq .Platform.Architecture "arm64"}}{{.Digest}}{{end}}{{end}}')
 
@@ -452,7 +455,7 @@ other two. `make verify-sig` runs every check at once — both signing modes, th
 index and each image, all six attestations, and what each one is about:
 
 ```bash
-make verify-sig TAG=31.1-3 COSIGN_PUB=cosign.pub \
+make verify-sig TAG=31.1-4 COSIGN_PUB=cosign.pub \
   COSIGN_IDENTITY='^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/'
 ```
 
@@ -471,6 +474,48 @@ to the old layout when per-platform attestations were missing would accept an
 image stripped of them. `31.1-2` has nothing to verify — see
 [Earlier tags](#earlier-tags).
 
+## Vulnerability scanning
+
+Two scanners, both pinned by hash: **Grype** reads the image's SBOM, **Trivy**
+reads the image itself. Two, because they disagree in ways a single tool hides.
+On the first scan of `31.1-3` they reported the same eight CVEs and differed
+completely on how bad they were — Grype two Critical, Trivy none — because
+Debian had not rated them and each fell back to a different source (NVD for
+Grype, other distributions for Trivy). Either answer alone would have been
+confident and arbitrary.
+
+```bash
+make verify-published TAG=31.1-4 PLATFORM=linux/arm64   # writes the SBOM, by digest
+make scan             TAG=31.1-4 PLATFORM=linux/arm64   # both scanners, one report
+```
+
+The report lists every finding with the scanner(s) that saw it, where they
+disagree on severity, what is fixable, which packages each tool inventoried —
+a package only one scanner sees is a blind spot for every CVE in it — and each
+scanner's version and vulnerability-database timestamp, since the same image
+scanned tomorrow can report differently only because the database moved.
+
+**Report only, by decision.** Nothing here fails a build or a release: severity
+is not stable enough to gate on, and most findings in a glibc image have no fix
+anyone downstream can apply. A scan that *could not run* does fail — an absent
+result is not a clean one.
+
+**`31.1-4`, scanned 2026-09-28**, both platforms identical:
+
+| | Grype | Trivy |
+|---|---|---|
+| packages seen | 6 | 6 — the same six |
+| critical / high | 1 / 3 | 0 / 0 |
+| medium / low / negligible / unknown | 9 / 2 / 7 / 0 | 15 / 7 / 0 / 1 |
+
+23 findings, 22 seen by both; the 23rd is a Debian LTS tzdata advisory only
+Trivy tracks. Every finding but that one is in **libc6**, which any glibc
+image carries and Debian has mostly deferred; 13 differ in severity between
+the scanners, all libc6. **One is fixable**: tzdata `2026c`, which distroless
+has not picked up yet. For comparison, `31.1-3` on `cc-debian12` had 34
+findings, 2 Critical and 6 High by Grype — the difference is libssl3 and the
+C++ runtime, which `bitcoind` never loaded.
+
 ## Repository layout
 
 ```
@@ -486,6 +531,8 @@ scripts/fetch-sums-from-guix-sigs.sh  recover signed sums for a withdrawn releas
 scripts/check-pins.sh            assert duplicated values agree across files
 scripts/build-keyring.sh         regenerate the keyring the container build uses
 scripts/verify-reproducible.sh   prove this commit builds the same image bytes anywhere
+scripts/install-scanners.sh      grype + trivy pinned by hash; --verify-pins re-derives the pins
+scripts/scan-image.sh            scan one platform image with both; report where they differ
 scripts/list-platforms.sh        the platform images inside a published index, from the registry
 scripts/compare-contents.sh      prove two images hold exactly the same files
 scripts/sign-image.sh            sign the index and its images; attest each platform
@@ -554,6 +601,9 @@ cross-built on amd64 both times, and the release also proved that the published
 arm64 image has exactly the files of the one that booted on native arm64
 hardware.
 
+**And for `31.1-4`**, the same three-way agreement: `linux/amd64 5775fe33…`,
+`linux/arm64 2b9efa07…`.
+
 **`31.1` predates this and cannot match.** It was built without timestamp
 rewriting, so its files carry the wall-clock time of that build. The check says
 so rather than passing quietly.
@@ -575,8 +625,10 @@ what happened on the v31.1-1 release, and is why the flag is there.
 
 ## Known gaps
 
-- **Negative tests cover the signature threshold only.** `make test` runs 35
-  assertions proving both threshold implementations agree and fail closed, on
+- **Negative tests cover three gates, not all of them.** `make test` proves the
+  signature threshold (both implementations agree and fail closed), that
+  configuration and the datadir reach the container, and that a full node
+  lifecycle loads nothing beyond glibc — natively on both architectures, on
   every pull request. The other gates — a planted file in the image, a tampered
   keyring, injected pin drift, an unwritable datadir, an unreadable image, a
   swapped image at the same tag — have each been shown to fail closed by hand,
@@ -600,6 +652,11 @@ what happened on the v31.1-1 release, and is why the flag is there.
   own `verify.py` against the same artifacts, is the only real second opinion.
   `make test` now at least proves the two copies behave identically on inputs
   designed to separate them, which is a narrower claim than independence.
+
+- **Scan results are not attested yet, and nothing rescans published images.**
+  `make scan` works against any published tag, but a release does not yet
+  attach the report, and a CVE disclosed after a release surfaces only when
+  someone runs it.
 
 ## License
 

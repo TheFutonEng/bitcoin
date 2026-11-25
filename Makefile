@@ -111,7 +111,7 @@ BUILD_DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>
 
 export SOURCE_DATE_EPOCH
 
-.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check check-runtime-deps build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold test-runtime-libs print-buildkit-image print-image-ref print-version print-revision print-triple print-platforms platform-ref verify-published repro-digest repro-digest-write verify-repro verify-repro-published clean
+.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check check-runtime-deps build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold test-runtime-libs print-buildkit-image print-image-ref print-version print-revision print-triple print-platforms platform-ref verify-published install-scanners scan repro-digest repro-digest-write verify-repro verify-repro-published clean
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s$$'\t'
@@ -368,6 +368,18 @@ digest-ref: ## Print the full pinnable reference: IMAGE@sha256:...
 digest: ## Print the pushed image digest — publish this, consumers pin it
 	@docker buildx imagetools inspect $(IMAGE):$(TAG) --format '{{.Manifest.Digest}}' 2>/dev/null \
 	  || echo "not pushed yet — run: make push"
+
+install-scanners: ## Install grype + trivy, pinned by hash (scripts/install-scanners.sh --verify-pins re-derives the pins)
+	scripts/install-scanners.sh
+
+# REPORT ONLY: findings never fail this target. A scanner that fails or sees no
+# packages does — an absent result is not a clean one. Scans PLATFORM's image
+# in the pushed index BY DIGEST, with Grype reading the SBOM that
+# verify-published wrote (the one the release attests) and Trivy the image, and
+# writes the combined report beside it for the release to attest.
+scan: install-scanners ## Scan PLATFORM's pushed image with grype + trivy; report where they disagree
+	@test -f $(PREDICATES)/sbom.spdx.json || { echo "no $(PREDICATES)/sbom.spdx.json — run: make verify-published PLATFORM=$(PLATFORM)" >&2; exit 1; }
+	scripts/scan-image.sh "$$($(MAKE) -s platform-ref)" $(PLATFORM) $(PREDICATES)/sbom.spdx.json $(PREDICATES)/scan-report.json
 
 sbom: ## Generate PLATFORM's SBOM from the pushed index (verify-published does this too)
 	@mkdir -p $(PREDICATES)
