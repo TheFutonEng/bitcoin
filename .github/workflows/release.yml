@@ -9,6 +9,18 @@ name: release
 #
 # This is the only workflow with write access or secrets. ci.yml is triggered by
 # pull requests, including from forks, and deliberately has neither.
+#
+# The signing secrets (COSIGN_KEY, COSIGN_PASSWORD) live in the `release`
+# ENVIRONMENT, not at repository level, and only `guard` and `publish` name it.
+# A repository secret is readable by any workflow run in this repo, including
+# one pushed on a branch by anyone with write access, and the key-pair
+# signature carries no identity for `cosign verify --key` to check. The
+# environment admits only `v*` tags, which the `release tags` ruleset restricts
+# to repository admins, and can require a reviewer on top. There must be NO
+# repository secrets of the same names: a job without `environment:` would
+# still read those. With none, removing `environment:` from either job makes
+# HAS_KEY read empty there, and guard fails the release rather than publishing
+# keyless-only.
 
 on:
   push:
@@ -54,6 +66,10 @@ jobs:
     name: guard
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Here as well as on publish, because the signing plan below must see the
+    # secret to fail early on its absence. With a required reviewer on the
+    # environment this is also the first approval, before anything is built.
+    environment: release
     outputs:
       version: ${{ steps.v.outputs.version }}
       revision: ${{ steps.v.outputs.revision }}
@@ -139,7 +155,7 @@ jobs:
             echo "::warning::Publishing keyless-only by explicit request." \
                  "cosign verify --key will not work for this release."
           else
-            echo "::error::COSIGN_KEY secret is empty or unset." \
+            echo "::error::COSIGN_KEY secret is empty or unset in the release environment." \
                  "cosign.pub is published, so the README tells consumers to run" \
                  "cosign verify --key, which would fail for this release." \
                  "Set the secret, or re-run with allow_keyless_only=true."
@@ -205,6 +221,9 @@ jobs:
     needs: [guard, preflight]
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # The only job that holds the private key. See the header for why this is an
+    # environment and not a repository secret.
+    environment: release
     permissions:
       contents: read
       packages: write   # push to GHCR

@@ -205,7 +205,8 @@ scripts/list-platforms.sh        platform images in a published index, read from
 scripts/compare-contents.sh      prove two images hold exactly the same files
 .github/workflows/ci.yml         the whole chain per platform, native runners; no secrets
 .github/workflows/release.yml    tag-triggered: boot each platform natively, publish one
-                                 index, verify by digest, sign; the ONLY workflow with secrets
+                                 index, verify by digest, sign; the ONLY workflow with secrets,
+                                 and only via the `release` environment (v* tags only)
 scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs
 scripts/fetch-sums-from-guix-sigs.sh  recover signed sums when upstream withdraws a release (read its header)
 scripts/cross-check-verify-py.sh second opinion on the threshold from Core's own verify.py
@@ -309,7 +310,9 @@ Three jobs. Worth knowing so a failure tells you where you stand:
 **`guard`** — refuse a non-tag ref; resolve version and revision and compare
 them to the tree; **signing plan**, which fails outright if `COSIGN_KEY` is
 absent unless `allow_keyless_only=true` was passed. It runs first, so a missing
-secret fails before any build. *Nothing published.*
+secret fails before any build. *Nothing published.* It names the `release`
+environment, as `publish` does, so with a required reviewer set this is where
+a release first waits for approval, and `publish` waits again after preflight.
 
 **`preflight`**, once per platform on a **native** runner (`ubuntu-latest`,
 `ubuntu-24.04-arm`), read-only token: fetch-tarball, verify, cross-check, build,
@@ -1408,8 +1411,13 @@ the question is actually answered.
 **The thing to be clear about before answering it.** A cosign private key stored
 in GitHub Actions secrets is *not* a second, independent trust root. It is the
 same trust root as keyless — "whoever controls this repo's workflows" — in a
-form that happens to verify offline. Anyone who can merge a workflow can use the
-secret. It buys air-gap verifiability, not independence from GitHub. Do not let
+form that happens to verify offline. Since 2026-11-25 the secrets live in the
+`release` environment, which only `v*` tags can deploy to, and the `release
+tags` ruleset lets only repository admins create those. Before that they were
+repository secrets, and anyone with write access could read them from a
+workflow pushed on any branch; `cosign verify --key` checks no identity, so a
+signature made that way would have verified. The narrowing is real but it is
+still GitHub: whoever administers the repo can use the key. It buys air-gap verifiability, not independence from GitHub. Do not let
 the repo claim otherwise.
 
 The options, and what each is actually for:
@@ -1488,8 +1496,9 @@ make sign TAG=31.1-3 COSIGN_KEY=./cosign.key
 # 4. Prove the round trip as a consumer would.
 make verify-sig TAG=31.1-3 COSIGN_PUB=./cosign.pub
 
-# 5. For FUTURE releases, add repo secrets COSIGN_KEY (the private key file's
-#    contents) and COSIGN_PASSWORD. release.yml picks them up automatically.
+# 5. For FUTURE releases, add COSIGN_KEY (the private key file's contents) and
+#    COSIGN_PASSWORD as secrets of the `release` ENVIRONMENT, not the repo.
+#    See "Signing secrets live in the release environment" below.
 ```
 
 **The secret is named `COSIGN_KEY`, and the name is load-bearing.** The first
@@ -1504,12 +1513,38 @@ Note the same name means two things: the *secret* holds the key's contents, the
 other.
 
 **If the key has a password, `COSIGN_PASSWORD` must also be a secret.** Both
-secrets are set as of 2026-09-19. Verified against a password-protected key that
+secrets were set at repository level on 2026-09-19, and are moved to the
+`release` environment by the change described next. Verified against a password-protected key that
 the whole CI path works non-interactively: `cosign public-key --key` reads
 `COSIGN_PASSWORD` from the environment, `make sign` passes it through, and the
 derived public key verifies all four checks. A **wrong** password is rejected
 rather than silently skipped, and **no** password exits rc=1 rather than hanging
 — there is no TTY in CI, so it cannot stall the job waiting for a prompt.
+
+**Signing secrets live in the `release` environment.** Moved 2026-11-25, ahead
+of giving a bot account write access. The environment must have:
+
+- **Deployment branches and tags: selected, tag pattern `v*` only.** No branch
+  can deploy to it, so a workflow pushed on a branch never sees the key.
+- **Required reviewer: the repo owner.** Optional, but it is the only thing
+  that gates `workflow_dispatch`: anyone with write can re-run release.yml from
+  an existing tag, and that ref passes the tag policy. Each job that names the
+  environment is approved separately, so a release asks twice: at `guard`, and
+  at `publish` after preflight has proved both platforms.
+- **Secrets `COSIGN_KEY` and `COSIGN_PASSWORD`**, and **no** repository-level
+  secrets of the same name. Leaving the old ones in place keeps the hole open:
+  an environment secret only overrides a repo secret for jobs that name the
+  environment.
+
+The order of the move matters. Create the environment and its secrets first,
+then merge the workflow change, then delete the repository secrets. Done the
+other way round, a release in between finds no key, and `guard` fails it.
+
+The rulesets this depends on, both active since 2026-11-25:
+`release tags` restricts creating, updating and deleting `refs/tags/v*` to
+repository admins; `main` requires a PR with one approval (stale approvals
+dismissed, last push approved), signed commits and both `verify + build +
+prove` checks, with repository admins able to bypass only when merging a PR.
 
 **Decide step 5 deliberately.** Putting the private key in GitHub secrets makes
 future releases automatic, and makes the key the same trust root as keyless. Not
