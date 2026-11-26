@@ -115,10 +115,12 @@ make check-pins
 ## Usage
 
 ```bash
-# Per version, on a connected machine
-make fetch VERSION=31.1          # downloads + verifies; tarball stays gitignored
-git add upstream/SHA256SUMS upstream/SHA256SUMS.asc
-git commit -m "upstream: bitcoin core 31.1 sums"
+# Per version, on a connected machine. Checks upstream's runtime library
+# contract, rewrites every copy of the version, fetches and verifies the signed
+# sums (threshold + verify.py), records the reproducible digest. Commits nothing.
+scripts/bump-version.sh 31.2
+git switch -c bump-31.2
+git commit -am "upstream: bitcoin core 31.2, image revision 1"   # tarball stays gitignored
 
 # Build and prove the result
 make build smoke verify-image
@@ -543,6 +545,7 @@ scripts/cross-check-verify-py.sh second opinion from Core's own verify.py
 scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs
 scripts/fetch-sums-from-guix-sigs.sh  recover signed sums for a withdrawn release
 scripts/check-pins.sh            assert duplicated values agree across files
+scripts/bump-version.sh          move to a new Bitcoin Core version: check, rewrite, fetch, digest
 scripts/build-keyring.sh         regenerate the keyring the container build uses
 scripts/verify-reproducible.sh   prove this commit builds the same image bytes anywhere
 scripts/install-scanners.sh      grype + trivy pinned by hash; --verify-pins re-derives the pins
