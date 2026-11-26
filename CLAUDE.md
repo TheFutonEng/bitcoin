@@ -319,10 +319,24 @@ mismatch: the build would succeed, the image would be labelled from the Makefile
 and published under the tag, and a consumer who pinned the digest would only
 ever see the label.
 
+A clone that did not run the bump has no tarballs for the new version (they
+are gitignored), and `repro-digest` stops with `missing upstream/bitcoin-…`.
+Fetch them, and verify them: `fetch-tarball` only downloads, while `verify`
+checks the signatures and the tarball hash against the committed sums.
+
 ```bash
+for p in linux/amd64 linux/arm64; do
+  make fetch-tarball PLATFORM=$p && make verify PLATFORM=$p || break
+done
 make repro-digest PLATFORM=linux/amd64    # note both values
 make repro-digest PLATFORM=linux/arm64
 ```
+
+These are **not** the values in `reproducible-digest.txt`, and are not meant
+to be. Those come from the canonical build with fixed placeholder labels, which
+CI checks on every PR. `repro-digest` builds with this commit's real hash and
+date, so it differs from the canonical value and from every other commit.
+There is nothing to compare it with until the release prints its own.
 
 Write those digests down. The release prints the same figures into its job
 summary; if they match, each published image is bit-for-bit what this commit
