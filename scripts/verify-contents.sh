@@ -38,7 +38,7 @@
 set -euo pipefail
 
 IMAGE="${1:?usage: verify-contents.sh <image-ref> [version] [triple]}"
-VERSION="${2:-31.1}"
+VERSION="${2:-31.2}"
 TRIPLE="${3:-x86_64-linux-gnu}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
