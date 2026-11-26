@@ -14,7 +14,7 @@
 #      handed us at build time".
 #   4. Runtime image has no shell, no package manager, and runs as non-root.
 
-ARG BITCOIN_VERSION=31.2
+ARG BITCOIN_VERSION=31.3
 # The image revision for that Bitcoin version, Debian-style: same upstream
 # binaries, different packaging. The published tag and
 # org.opencontainers.image.version are both BITCOIN_VERSION-IMAGE_REVISION.

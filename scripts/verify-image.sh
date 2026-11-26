@@ -27,7 +27,7 @@
 set -euo pipefail
 
 IMAGE="${1:?usage: verify-image.sh <image-ref> [version] [triple]}"
-VERSION="${2:-31.2}"
+VERSION="${2:-31.3}"
 TRIPLE="${3:-x86_64-linux-gnu}"
 BIN_PATH="${BIN_PATH:-/usr/local/bin}"
 BINARIES="${BINARIES:-bitcoind bitcoin-cli}"

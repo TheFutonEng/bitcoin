@@ -2,7 +2,7 @@ SHELL := /usr/bin/env bash
 
 # The UPSTREAM Bitcoin Core version. This selects the release tarball and the
 # signed sums; it is not the image's version. See REVISION.
-VERSION       ?= 31.2
+VERSION       ?= 31.3
 # The image revision for that Bitcoin version — the Debian
 # `upstream_version-debian_revision` model. Same binaries, different packaging.
 #
