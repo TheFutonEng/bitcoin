@@ -39,8 +39,10 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  VERSION: "31.1"
+# No `env: VERSION` here, deliberately. Every make target reads VERSION from the
+# Makefile, and make's `?=` yields to the environment, so a copy here would
+# silently override it. Until 2026-11-26 there was one, which made every Bitcoin
+# version bump a workflow edit. check-pins.sh now fails if one comes back.
 
 jobs:
   # Did anything other than markdown change? Everything downstream gates on this.
@@ -195,7 +197,7 @@ jobs:
         id: tb
         if: env.CODE == 'true'
         run: |
-          file="bitcoin-${VERSION}-$(make -s print-triple).tar.gz"
+          file="bitcoin-$(make -s print-version)-$(make -s print-triple).tar.gz"
           sha=$(grep "  ${file}\$" upstream/SHA256SUMS | cut -d' ' -f1)
           test -n "$sha"
           echo "file=$file" >> "$GITHUB_OUTPUT"

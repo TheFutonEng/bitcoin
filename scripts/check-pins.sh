@@ -43,6 +43,29 @@ mk_rev="$(sed -n 's/^REVISION[[:space:]]*?=[[:space:]]*\([0-9]\+\).*/\1/p' Makef
 df_rev="$(sed -n 's/^ARG IMAGE_REVISION=\([0-9]\+\).*/\1/p' Dockerfile)"
 cmp_vals "IMAGE_REVISION" "${mk_rev}" "${df_rev}"
 
+# BITCOIN_VERSION: every copy, plus the committed sums. Added 2026-11-26 for the
+# first version bump (31.1 -> 31.2); every earlier bump was a revision, so
+# these copies had never had to move together. scripts/bump-version.sh rewrites
+# them; this proves it did. The script fallbacks only matter when a script is
+# run by hand, which is exactly when a stale one would mislead.
+mk_ver="$(sed -n 's/^VERSION[[:space:]]*?=[[:space:]]*\([0-9.]*\)$/\1/p' Makefile)"
+df_ver="$(sed -n 's/^ARG BITCOIN_VERSION=\([0-9.]*\)$/\1/p' Dockerfile)"
+fb_ver="$(sed -n 's/^VERSION="\${[12A-Z]*:-\([0-9.]*\)}".*/\1/p' \
+  tests/test-threshold.sh scripts/verify-contents.sh scripts/verify-image.sh scripts/verify-reproducible.sh \
+  | sort -u | tr '\n' ' ')"
+sums_ver="$(sed -n 's/^[0-9a-f]\{64\}  bitcoin-\([0-9.]*\)-.*/\1/p' upstream/SHA256SUMS 2>/dev/null | sort -u | tr '\n' ' ')"
+cmp_vals "BITCOIN_VERSION" "${mk_ver}" "${df_ver}" "${fb_ver% }" "${sums_ver% }"
+
+# A workflow must not pin its own VERSION: make's `?=` yields to the
+# environment, so it would silently override the Makefile. ci.yml did until
+# 2026-11-26, which made every version bump a workflow edit.
+for wf in .github/workflows/*.yml; do
+  if grep -qE '^[[:space:]]+VERSION:[[:space:]]*"?[0-9]+\.[0-9]+' "${wf}"; then
+    printf '  DRIFT %-18s %s pins VERSION; read it from make -s print-version\n' "WORKFLOW_VERSION" "${wf}"
+    fail=1
+  fi
+done
+
 # Architecture -> tarball triple. The Dockerfile has to map TARGETARCH itself,
 # because one multi-platform build cannot take a per-platform build arg, and the
 # host tooling needs the same mapping to name the tarball it verifies. Drift is

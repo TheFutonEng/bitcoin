@@ -217,6 +217,7 @@ tests/test-threshold.sh          negative tests: both threshold gates, same fixt
 tests/test-config.sh             config and the datadir actually reach the container
 tests/test-runtime-libs.sh       full node lifecycle under LD_DEBUG: nothing loaded beyond glibc
 scripts/check-runtime-deps.sh    before every build: the base has every library the binaries NEED
+scripts/bump-version.sh          new Core version: lib contract, rewrite, fetch+verify, repro digest
 scripts/install-scanners.sh      grype + trivy pinned by hash; --verify-pins re-derives pins from signed checksums
 scripts/scan-image.sh            scan one platform image with both; report agreement, disagreement, blind spots
 scripts/fetch-attested-sbom.sh   the SBOM a release attested; keyless, exact identity v<tag>
@@ -242,15 +243,8 @@ mv keys/trusted-fingerprints.txt{.candidate,}
 # then delete the .asc files you did not keep — keys/ tracks the allowlist
 make check-pins
 
-# per version
-make fetch VERSION=31.1          # downloads, verifies, cross-checks against verify.py
-git add upstream/SHA256SUMS upstream/SHA256SUMS.asc
-git commit -m "upstream: bitcoin core 31.1 sums"  # the tarball is gitignored
-# Before building a NEW Core version: diff upstream's contract for what the
-# binaries may link, since the runtime base provides exactly that and no more.
-#   contrib/guix/symbol-check.py, ELF_ALLOWED_LIBRARIES, old tag vs new tag.
-# check-runtime-deps (run by `make build`) catches an actual change; this is
-# the early warning, and the place to read why.
+# per version: see "Bumping the Bitcoin version" under Releasing
+scripts/bump-version.sh 31.2     # contract check, rewrite, fetch + verify, repro digest
 make build smoke verify-image verify-contents        # per PLATFORM
 make push                        # every PLATFORMS entry, one index, mode=max + SBOM
 make verify-published PLATFORM=linux/amd64           # by digest; writes predicates/
@@ -269,6 +263,45 @@ doing something clever, this catches it.
 A release is a signed git tag. Everything else is automatic, and everything that
 could publish the wrong thing is guarded — but the guards only run at tag time,
 so read this before cutting one.
+
+### Who does what (since 2026-11-25)
+
+Claude works as `clwsbot`, which has Write but cannot tag or reach the signing
+key; Rob is the only admin. So a release splits like this:
+
+| Step | Who | Why it has to be them |
+|---|---|---|
+| Bump PR (`bump-version.sh`), CI green | Claude | Nothing in it touches a workflow |
+| Approve and merge the bump PR | Rob | `main` needs an approval |
+| `make repro-digest` both platforms; signed tag; push it | Rob | `release tags` ruleset: only admins create `v*` |
+| Approve `guard`, then approve `publish` after preflight | Rob | `release` environment, required reviewer, one approval per job |
+| Verify as an outsider; README PR for the new tag | Claude | Read-only checks and docs |
+
+A change under `.github/workflows/` is pushed by Rob: clwsbot's token has no
+`workflow` scope, so GitHub refuses it. Rob also merges such PRs with
+`--admin`, because the last-push approval rule will not accept an approval
+from the person who pushed last.
+
+### Bumping the Bitcoin version
+
+`scripts/bump-version.sh <new>` does the mechanical part and stops at the first
+thing that needs a decision. In order: a clean tree; upstream's runtime library
+contract (`ELF_ALLOWED_LIBRARIES` in `contrib/guix/symbol-check.py`, old tag vs
+new) **before anything changes**, since the base provides glibc and nothing
+else; every copy of the version rewritten and `REVISION` reset to 1;
+`make fetch` per platform (signed sums, threshold, `verify.py`); `check-pins`;
+`make repro-digest-write`. It commits nothing.
+
+The first real bump, 31.1 -> 31.2 on 2026-11-26, found two things the docs had
+not: `ci.yml` pinned its own `VERSION: "31.1"`, which overrides the Makefile
+because `?=` yields to the environment (removed; `check-pins` now fails on any
+workflow that pins it), and four scripts carried 31.1 as a fallback default
+(`check-pins` now checks those too, with the committed sums).
+
+Then read the release notes for anything that changes defaults or shipped
+files. For a **major** version, also expect `examples/bitcoin.conf` and
+`tests/test-config.sh` to need attention; that is its own piece of work, not
+a bump.
 
 ### Before you tag
 
@@ -380,7 +413,8 @@ The rule the versioning scheme exists to make possible:
 
 - **Nothing reached the registry** (`guard` or `preflight` failed, or
   `publish` before its push): delete the tag, fix, re-tag the
-  same name. No artifact ever carried it.
+  same name. No artifact ever carried it. Deleting a `v*` tag is an admin
+  action under the `release tags` ruleset, so this is Rob's step.
   ```bash
   git tag -d v31.1-1 && git push origin :refs/tags/v31.1-1
   ```
