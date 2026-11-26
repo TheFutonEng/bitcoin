@@ -67,7 +67,18 @@ cmp_vals "ARCH_TRIPLES" "${df_arch}" "${mk_arch}" "${vr_arch}" "${tt_arch}"
 mk_plats="$(sed -n 's/^PLATFORMS[[:space:]]*?=[[:space:]]*\(.*\)/\1/p' Makefile | tr ' ' '\n' | sed -n 's#^linux/##p' | arch_map)"
 ci_plats="$(sed -n 's/^[[:space:]]*- arch:[[:space:]]*\([a-z0-9]*\).*/\1/p' .github/workflows/ci.yml | arch_map)"
 rel_plats="$(sed -n 's/^[[:space:]]*- arch:[[:space:]]*\([a-z0-9]*\).*/\1/p' .github/workflows/release.yml | arch_map)"
-cmp_vals "PLATFORMS" "${mk_plats}" "${ci_plats}" "${rel_plats}"
+# The daily rescan too: a platform it does not list is published and never
+# rescanned, which is the gap the rescan exists to close.
+rs_plats="$(sed -n 's/^[[:space:]]*- arch:[[:space:]]*\([a-z0-9]*\).*/\1/p' .github/workflows/rescan.yml | arch_map)"
+cmp_vals "PLATFORMS" "${mk_plats}" "${ci_plats}" "${rel_plats}" "${rs_plats}"
+
+# cosign: the release signs with it, the rescan verifies with it. One pin for
+# both, version and hash, so a bump cannot leave the rescan on a binary nobody
+# reviewed against the release.
+rel_cosign="$(sed -n 's/^[[:space:]]*COSIGN_\(VERSION\|SHA256\):[[:space:]]*\(.*\)/\2/p' .github/workflows/release.yml | tr '\n' ' ')"
+rs_cosign="$(sed -n 's/^[[:space:]]*COSIGN_\(VERSION\|SHA256\):[[:space:]]*\(.*\)/\2/p' .github/workflows/rescan.yml | tr '\n' ' ')"
+[[ -n "${rel_cosign// /}" ]] || { echo "  DRIFT COSIGN_PIN         could not read release.yml's pin"; fail=1; }
+cmp_vals "COSIGN_PIN" "${rel_cosign}" "${rs_cosign}"
 
 # RUNTIME_BASE: Makefile default vs Dockerfile ARG
 mk_base="$(sed -n 's/^RUNTIME_BASE[[:space:]]*?=[[:space:]]*\(.*\)/\1/p' Makefile)"

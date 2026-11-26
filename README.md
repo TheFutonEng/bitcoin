@@ -485,9 +485,23 @@ Grype, other distributions for Trivy). Either answer alone would have been
 confident and arbitrary.
 
 ```bash
-make verify-published TAG=31.1-4 PLATFORM=linux/arm64   # writes the SBOM, by digest
-make scan             TAG=31.1-4 PLATFORM=linux/arm64   # both scanners, one report
+make attested-sbom TAG=31.1-4 PLATFORM=linux/arm64   # the SBOM the release signed, verified
+make scan          TAG=31.1-4 PLATFORM=linux/arm64   # both scanners, one report
 ```
+
+`make attested-sbom` needs only cosign and network: it fetches the SBOM
+attestation from the registry and verifies it against the release workflow's
+identity on that exact tag before writing it. `make verify-published` also
+writes an SBOM, regenerated with syft, as part of the full verification.
+
+**Rescanned daily.** [`rescan.yml`](.github/workflows/rescan.yml) does exactly
+the above for the newest release tag, both platforms, every day, and keeps one
+open issue per tag, labelled
+[`rescan`](https://github.com/TheFutonEng/bitcoin/issues?q=label%3Arescan),
+with the current findings. It comments only when they change: a new or gone
+finding, one that became fixable, a severity either scanner revised, or a
+digest that moved. The image does not have to change for the findings to:
+`31.1-4` went from 23 findings at release to 34 two months later.
 
 The report lists every finding with the scanner(s) that saw it, where they
 disagree on severity, what is fixable, which packages each tool inventoried —
@@ -533,6 +547,8 @@ scripts/build-keyring.sh         regenerate the keyring the container build uses
 scripts/verify-reproducible.sh   prove this commit builds the same image bytes anywhere
 scripts/install-scanners.sh      grype + trivy pinned by hash; --verify-pins re-derives the pins
 scripts/scan-image.sh            scan one platform image with both; report where they differ
+scripts/fetch-attested-sbom.sh   the SBOM a release attested, verified against its identity
+scripts/rescan-report.sh         turn a rescan into the tracking issue, and say what changed
 scripts/list-platforms.sh        the platform images inside a published index, from the registry
 scripts/compare-contents.sh      prove two images hold exactly the same files
 scripts/sign-image.sh            sign the index and its images; attest each platform
@@ -653,10 +669,9 @@ what happened on the v31.1-1 release, and is why the flag is there.
   `make test` now at least proves the two copies behave identically on inputs
   designed to separate them, which is a narrower claim than independence.
 
-- **Scan results are not attested yet, and nothing rescans published images.**
-  `make scan` works against any published tag, but a release does not yet
-  attach the report, and a CVE disclosed after a release surfaces only when
-  someone runs it.
+- **Scan results are not attested yet.** The daily rescan keeps the current
+  tag's findings in an issue, but a release does not attach a signed
+  `scan-report.json`, so there is no scan result bound to the image itself.
 
 ## License
 

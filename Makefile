@@ -111,7 +111,7 @@ BUILD_DATE    := $(shell date -u -d @$(SOURCE_DATE_EPOCH) +%Y-%m-%dT%H:%M:%SZ 2>
 
 export SOURCE_DATE_EPOCH
 
-.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check check-runtime-deps build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold test-runtime-libs print-buildkit-image print-image-ref print-version print-revision print-triple print-platforms platform-ref verify-published install-scanners scan repro-digest repro-digest-write verify-repro verify-repro-published clean
+.PHONY: help check-pins keyring fetch fetch-tarball verify cross-check check-runtime-deps build push smoke sign attest digest-ref verify-image verify-contents verify-upstream digest sbom sign attest verify-sig test test-threshold test-runtime-libs print-buildkit-image print-image-ref print-version print-revision print-triple print-platforms platform-ref verify-published install-scanners scan attested-sbom repro-digest repro-digest-write verify-repro verify-repro-published clean
 
 help:
 	@grep -E '^[a-z-]+:.*?##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/' | column -t -s$$'\t'
@@ -378,8 +378,15 @@ install-scanners: ## Install grype + trivy, pinned by hash (scripts/install-scan
 # verify-published wrote (the one the release attests) and Trivy the image, and
 # writes the combined report beside it for the release to attest.
 scan: install-scanners ## Scan PLATFORM's pushed image with grype + trivy; report where they disagree
-	@test -f $(PREDICATES)/sbom.spdx.json || { echo "no $(PREDICATES)/sbom.spdx.json — run: make verify-published PLATFORM=$(PLATFORM)" >&2; exit 1; }
+	@test -f $(PREDICATES)/sbom.spdx.json || { echo "no $(PREDICATES)/sbom.spdx.json — run: make attested-sbom (or verify-published) PLATFORM=$(PLATFORM)" >&2; exit 1; }
 	scripts/scan-image.sh "$$($(MAKE) -s platform-ref)" $(PLATFORM) $(PREDICATES)/sbom.spdx.json $(PREDICATES)/scan-report.json
+
+# What the scheduled rescan (.github/workflows/rescan.yml) scans: the SBOM the
+# release signed, fetched from the registry and verified against the release
+# workflow's keyless identity on v$(TAG). Needs no tarball and no docker, only
+# cosign and network. Then `make scan` as usual.
+attested-sbom: ## Fetch and verify the SBOM the release attested to PLATFORM's image
+	scripts/fetch-attested-sbom.sh "$$($(MAKE) -s platform-ref)" $(TAG) $(PREDICATES)/sbom.spdx.json
 
 sbom: ## Generate PLATFORM's SBOM from the pushed index (verify-published does this too)
 	@mkdir -p $(PREDICATES)
