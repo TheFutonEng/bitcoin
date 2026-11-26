@@ -1279,10 +1279,27 @@ can be picked up at any point.
       First live baseline at the time of writing: 34 findings, 4 fixable
       (ca-certificates and three tzdata DLAs), up from 23 at release.
 
-      Remaining for this item: the CIS image-level controls, and attaching
-      `scan-report.json` per platform at release. `make scan` already writes
-      the report beside the other predicates, where the release will pick it
-      up.
+      Remaining for this item: the two follow-ups below.
+- [ ] **Attest `scan-report.json` per platform at release.** Follow-up from
+      the hardening item, added 2026-11-26. The daily rescan keeps the
+      current findings in an issue, but nothing binds a scan result to the
+      image itself. `make scan` already writes the report into
+      `predicates/<os>-<arch>/`, beside the three predicates `sign-image.sh`
+      attaches, so the work is: run the scan in `publish` after
+      `verify-published`, attest it as a fourth predicate type (its own
+      `PRED_*` URI), and teach `verify-signatures.sh` and `make verify-sig` to
+      expect four. Decide first what the attestation *claims*: a scan is true
+      only as of its database timestamps, which the report records, and a
+      consumer must not read "attested at release" as "clean today". The
+      release must not fail on findings (report only, by decision); it must
+      fail if the scan could not run, as `make scan` already does.
+- [ ] **CIS image-level controls.** Follow-up from the hardening item, added
+      2026-11-26. The CIS Docker Benchmark's image section (4.x) against
+      `31.1-4` on both platforms: record each control as met, not
+      applicable, or a gap with a reason, as the STIG pass does. Several are
+      met by construction and only need the evidence written down (non-root
+      user, no setuid binaries, no package manager, content trust via the
+      signatures); a gap becomes its own item.
 - [x] **Test that Dockerfile and verify.sh agree — done 2026-09-21.**
       `check-pins.sh` had covered the *values* since 2026-09-12; `make test`
       now covers the *logic*. `tests/test-threshold.sh` splits the real
