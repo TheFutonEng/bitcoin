@@ -14,7 +14,7 @@
 #      handed us at build time".
 #   4. Runtime image has no shell, no package manager, and runs as non-root.
 
-ARG BITCOIN_VERSION=31.1
+ARG BITCOIN_VERSION=31.2
 # The image revision for that Bitcoin version, Debian-style: same upstream
 # binaries, different packaging. The published tag and
 # org.opencontainers.image.version are both BITCOIN_VERSION-IMAGE_REVISION.
@@ -23,7 +23,7 @@ ARG BITCOIN_VERSION=31.1
 # agree, exactly as it does for MIN_GOOD_SIGS. The default matters: a direct
 # `docker build` that forgets the build arg still produces a correctly labelled
 # image rather than one claiming to be "31.1-".
-ARG IMAGE_REVISION=4
+ARG IMAGE_REVISION=1
 # Invariant 4: pinned by digest, never by tag. This digest IS the `:nonroot`
 # variant of base-nossl-debian12 as of 2026-09-26 (config User 65532, checked
 # when pinned) — the name no longer says so, which is the cost of pinning. It

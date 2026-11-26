@@ -39,7 +39,7 @@
 #
 set -euo pipefail
 
-VERSION="${1:-31.1}"
+VERSION="${1:-31.2}"
 TRIPLE="${2:-x86_64-linux-gnu}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

@@ -15,6 +15,6 @@
 # list or the pinned base image changes. Any other change to them is a
 # reproducibility regression, and CI is what says so.
 #
-# version:  31.1
-linux/amd64 sha256:b3fe05cdb4e6ada124e506eaa4917d131f4aee9b07476d4df822659acd216a55
-linux/arm64 sha256:4b15049d29290bb13ff2adf4cf8b54fa1d5da7e6a96e5e69d9439d042acb69f0
+# version:  31.2
+linux/amd64 sha256:3868c95c38aa10ea4c2baba070deb0252ff6773bd0819bc68ffa0c1b759e5952
+linux/arm64 sha256:11477f1f3be4c0f26462cf5224faf56b88002865472ca782b36e8fdd6e9df962
