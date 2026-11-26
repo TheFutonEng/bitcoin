@@ -207,6 +207,7 @@ scripts/compare-contents.sh      prove two images hold exactly the same files
 .github/workflows/release.yml    tag-triggered: boot each platform natively, publish one
                                  index, verify by digest, sign; the ONLY workflow with secrets,
                                  and only via the `release` environment (v* tags only)
+.github/workflows/rescan.yml     daily: newest tag, both platforms, attested SBOM; issues: write only
 scripts/import-builder-keys.sh   one-time bootstrap of keys/ from guix.sigs
 scripts/fetch-sums-from-guix-sigs.sh  recover signed sums when upstream withdraws a release (read its header)
 scripts/cross-check-verify-py.sh second opinion on the threshold from Core's own verify.py
@@ -218,6 +219,8 @@ tests/test-runtime-libs.sh       full node lifecycle under LD_DEBUG: nothing loa
 scripts/check-runtime-deps.sh    before every build: the base has every library the binaries NEED
 scripts/install-scanners.sh      grype + trivy pinned by hash; --verify-pins re-derives pins from signed checksums
 scripts/scan-image.sh            scan one platform image with both; report agreement, disagreement, blind spots
+scripts/fetch-attested-sbom.sh   the SBOM a release attested; keyless, exact identity v<tag>
+scripts/rescan-report.sh         rescan reports -> tracking-issue body + comment on change; no network
 examples/bitcoin.conf            commented teaching file AND the fixture test-config.sh runs
 reproducible-digest.txt          canonical image manifest digest per platform; CI checks each
 predicates/                      gitignored: per-platform attestation inputs, from verify-published
@@ -646,8 +649,8 @@ What remains is in a deliberate order, and the order matters more than it looks.
    distroless CVE when upstream has withdrawn the release.
 
 Item 2 is under way against `31.1-4` (released 2026-09-27, on
-`base-nossl-debian12`): scanning is in; the CIS image controls, attaching the
-scan to releases, and the scheduled rescan remain. See the STIG item. Items 3 and 4 are independent of everything and
+`base-nossl-debian12`): scanning and the daily rescan are in; the CIS image
+controls and attaching the scan to releases remain. See the STIG item. Items 3 and 4 are independent of everything and
 can be picked up at any point.
 
 - [x] **`verify-sig` now verifies all three predicates.** Done 2026-09-15. It
@@ -1260,10 +1263,26 @@ can be picked up at any point.
       distroless). `31.1-3` had 34 findings and 2 Critical / 6 High by Grype;
       the whole difference is the packages the base switch removed.
 
-      Remaining for this item: the CIS image-level controls, attaching
-      `scan-report.json` per platform at release, and the scheduled rescan.
-      `make scan` already writes the report beside the other predicates, where
-      the release will pick it up.
+      **Daily rescan — 2026-11-26.** `.github/workflows/rescan.yml` rescans
+      the newest `v*` tag (tags, not the Makefile: the Makefile can name an
+      untagged revision) on both platforms. Grype reads the SBOM the release
+      **attested**, fetched by `make attested-sbom` and verified keyless against
+      `release.yml@refs/tags/v<tag>` exactly, so a rescan also re-verifies the
+      attestation. Results go to one open issue per tag, label `rescan`; the
+      issue body carries the last run's state (base64, in an HTML comment), and
+      `scripts/rescan-report.sh` comments only when findings are new, gone,
+      newly fixable, re-rated, or a digest moved. Database timestamps alone are
+      not a change. A new tag's first run closes the old tag's issue; a manual
+      run for an older tag does not. `scan` is read-only; only `report` has
+      `issues: write`, and it runs no scanner binaries. `check-pins.sh` now
+      asserts the rescan's platforms and its cosign pin match the release.
+      First live baseline at the time of writing: 34 findings, 4 fixable
+      (ca-certificates and three tzdata DLAs), up from 23 at release.
+
+      Remaining for this item: the CIS image-level controls, and attaching
+      `scan-report.json` per platform at release. `make scan` already writes
+      the report beside the other predicates, where the release will pick it
+      up.
 - [x] **Test that Dockerfile and verify.sh agree — done 2026-09-21.**
       `check-pins.sh` had covered the *values* since 2026-09-12; `make test`
       now covers the *logic*. `tests/test-threshold.sh` splits the real

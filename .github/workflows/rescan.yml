@@ -1,0 +1,197 @@
+name: rescan
+
+# Daily vulnerability rescan of the CURRENT published image, both platforms.
+#
+# Why a schedule: a release is scanned once, but the vulnerability databases
+# move every day. 31.1-4 had 23 findings when it was released on 2026-09-27
+# and 34 two months later, with the image byte-for-byte unchanged. Without a
+# rescan, the only way to learn that is to remember to run `make scan`.
+#
+# What "current" means: the highest v<version>-<revision> TAG, not the
+# Makefile. Tags are what was released, and the `release tags` ruleset protects
+# them; the Makefile on main can name a revision for days before it is tagged.
+# workflow_dispatch can name another tag.
+#
+# What is scanned: the SBOM the release ATTESTED, fetched and verified against
+# the release workflow's keyless identity on that tag (make attested-sbom), so
+# every rescan also proves the attestation still verifies. Grype scans that;
+# Trivy scans the image by digest. See scripts/scan-image.sh.
+#
+# Report only, as for `make scan`: findings never fail this workflow. A scan
+# that could not run does: an absent result is not a clean one, and a failed
+# scheduled run is what makes GitHub send an email.
+#
+# Where results go: one open issue per tag, labelled `rescan`, rewritten every
+# run, with a comment ONLY when the findings change (new, gone, newly fixable,
+# severity, digest). Releasing a new tag closes the old tag's issue.
+#
+# Permissions: `scan` is read-only and runs the scanners. `report` is the only
+# job with write access, `issues: write`, and runs no third-party binaries.
+# No secrets are used.
+#
+# GitHub disables scheduled workflows in a public repository after 60 days
+# without activity. If the issue stops updating, re-enable it under Actions.
+
+on:
+  schedule:
+    - cron: '23 7 * * *'   # daily, after both scanners' databases have usually rebuilt
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to rescan, e.g. 31.1-4 (default: the newest release tag)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rescan
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: resolve tag
+    if: github.repository == 'TheFutonEng/bitcoin'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.t.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - id: t
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_TAG}" ]; then
+            tag="${INPUT_TAG#v}"
+          else
+            tag="$(git tag -l 'v*' | sed -n 's/^v\([0-9][0-9.]*-[0-9][0-9]*\)$/\1/p' | sort -V | tail -1)"
+          fi
+          [[ "${tag}" =~ ^[0-9]+(\.[0-9]+)+-[0-9]+$ ]] || { echo "::error::no usable tag: '${tag}'"; exit 1; }
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "rescanning ghcr.io/thefutoneng/bitcoin:${tag}"
+
+  scan:
+    name: scan (${{ matrix.arch }})
+    needs: resolve
+    runs-on: ubuntu-latest   # scanning is registry reads; no native runner needed
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false   # see which platform failed
+      matrix:
+        # Must list exactly the Makefile's PLATFORMS — check-pins.sh asserts it.
+        include:
+          - arch: amd64
+          - arch: arm64
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+      PLATFORM: linux/${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The same pin as release.yml — check-pins.sh asserts they agree.
+      - name: Install cosign
+        env:
+          COSIGN_VERSION: v3.1.3
+          COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"; echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          curl -sSfL -o /tmp/cosign \
+            "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64"
+          echo "${COSIGN_SHA256}  /tmp/cosign" | sha256sum -c -
+          install -m 0755 /tmp/cosign "$HOME/.local/bin/cosign"
+          cosign version --json >/dev/null
+          echo "cosign ${COSIGN_VERSION} verified by hash"
+
+      - name: Fetch and verify the attested SBOM
+        run: make attested-sbom TAG="${TAG}" PLATFORM="${PLATFORM}"
+
+      # make scan installs grype + trivy, pinned by hash (install-scanners.sh).
+      - name: Scan
+        run: |
+          set -euo pipefail
+          make scan TAG="${TAG}" PLATFORM="${PLATFORM}" | tee /tmp/scan.out
+          {
+            echo "### ${PLATFORM} — ghcr.io/thefutoneng/bitcoin:${TAG}"
+            echo '```'
+            sed -n '/^>> /,$p' /tmp/scan.out
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scan-report-${{ matrix.arch }}
+          path: predicates/linux-${{ matrix.arch }}/scan-report.json
+          if-no-files-found: error
+          retention-days: 90
+
+  report:
+    name: update tracking issue
+    needs: [resolve, scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      INPUT_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: scan-report-*
+          path: reports
+
+      - name: Update the issue for this tag
+        run: |
+          set -euo pipefail
+          title="Rescan: ghcr.io/thefutoneng/bitcoin:${TAG}"
+          gh label create rescan --color 5319e7 \
+            --description "Daily vulnerability rescan of a published image" --force >/dev/null
+
+          open="$(gh issue list --label rescan --state open --limit 100 --json number,title,body)"
+          num="$(jq -r --arg t "${title}" '[.[] | select(.title == $t)][0].number // empty' <<<"${open}")"
+          prev=-
+          if [ -n "${num}" ]; then
+            jq -r --arg t "${title}" '[.[] | select(.title == $t)][0].body' <<<"${open}" > /tmp/prev.md
+            prev=/tmp/prev.md
+          fi
+
+          status="$(scripts/rescan-report.sh "${TAG}" "${prev}" /tmp/out "${RUN_URL}" reports/*/scan-report.json)"
+          echo "status: ${status}"
+
+          if [ -z "${num}" ]; then
+            url="$(gh issue create --title "${title}" --label rescan --body-file /tmp/out/body.md)"
+            num="${url##*/}"
+            echo "opened #${num}"
+          else
+            gh issue edit "${num}" --body-file /tmp/out/body.md >/dev/null
+            if [ -f /tmp/out/comment.md ]; then
+              gh issue comment "${num}" --body-file /tmp/out/comment.md >/dev/null
+              echo "#${num}: findings changed, commented"
+            else
+              echo "#${num}: no change"
+            fi
+          fi
+
+          # A newer release supersedes the old tag's issue. Only when this run
+          # scanned the newest tag: a manual rescan of an older one must not
+          # close the current tag's issue.
+          [ -n "${INPUT_TAG}" ] || jq -r --arg t "${title}" '.[] | select(.title != $t and (.title | startswith("Rescan: "))) | .number' \
+            <<<"${open}" | while read -r old; do
+              gh issue close "${old}" --comment "Superseded by #${num} (\`${TAG}\`)." >/dev/null
+              echo "closed #${old}: superseded"
+            done
+
+          echo "Tracking issue: ${GITHUB_SERVER_URL}/${GH_REPO}/issues/${num} (${status})" >> "$GITHUB_STEP_SUMMARY"
