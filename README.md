@@ -8,8 +8,8 @@ manifest of everything inside it.
 Scope is deliberately narrow: this repo **builds, verifies, and publishes an
 image**. It says nothing about how you deploy or operate a node.
 
-> **Status: published, multi-arch.** `ghcr.io/thefutoneng/bitcoin:31.2-1`,
-> Bitcoin Core 31.2, is live for **linux/amd64 and linux/arm64** as one index — `docker pull` picks
+> **Status: published, multi-arch.** `ghcr.io/thefutoneng/bitcoin:31.3-1`,
+> Bitcoin Core 31.3, is live for **linux/amd64 and linux/arm64** as one index — `docker pull` picks
 > your platform. It runs on distroless `base-nossl-debian12`: glibc and nothing
 > else, because the official binaries load nothing else. The index and both
 > images are signed two ways — keyless and with a published key pair — and each
@@ -20,13 +20,13 @@ image**. It says nothing about how you deploy or operate a node.
 > bytes, on either platform.
 >
 > ```
-> ghcr.io/thefutoneng/bitcoin@sha256:839ffc054fda989c7ebaee0fe7da4f87c674a81f3b0c54a4ca727ab783bf2d89
+> ghcr.io/thefutoneng/bitcoin@sha256:fa11dde32dd78a0a2c969ace76a2d14eb7346b6b0f39036fb5f84557bb9f5e7b
 > ```
 >
 > Pin that digest.
 >
-> Five earlier tags exist, all Bitcoin Core 31.1: `:31.1-4` is the same image
-> design on 31.1, `:31.1-3` is signed and
+> Six earlier tags exist. `:31.2-1` and `:31.1-4` are the same image design on
+> Bitcoin Core 31.2 and 31.1. The rest are all 31.1: `:31.1-3` is signed and
 > multi-arch on the older `cc-debian12` base, `:31.1` and `:31.1-1` are signed,
 > amd64-only images from before multi-arch, and **`:31.1-2` is unsigned — do not
 > use it**. See [Earlier tags](#earlier-tags) for what each one is.
@@ -154,7 +154,7 @@ Run `make help` for the full target list.
 Tags are `<bitcoin version>-<image revision>`:
 
 ```
-ghcr.io/thefutoneng/bitcoin:31.2-1
+ghcr.io/thefutoneng/bitcoin:31.3-1
                             ^^^^ ^
                             |    image revision
                             Bitcoin Core version
@@ -178,10 +178,10 @@ image pulled by digest still says which revision it is. Tags live in the
 registry and are not part of the artifact; the label is what survives a
 `docker pull` by digest, which is what this README tells you to do anyway.
 
-**Bare version tags are not published.** There is no `:31.2` being maintained —
+**Bare version tags are not published.** There is no `:31.3` being maintained —
 it would be ambiguous the moment the image changes without the binaries
 changing, which is exactly what the revision exists to express. Pin a digest for
-anything real; use `31.2-1` when you want a name.
+anything real; use `31.3-1` when you want a name.
 
 ### Earlier tags
 
@@ -191,7 +191,8 @@ and this is what each of them is.
 
 | Tag | Platforms | Signed | Notes |
 |---|---|---|---|
-| `31.2-1` | amd64, arm64 | yes, both ways | **current** — Bitcoin Core 31.2, `base-nossl-debian12` |
+| `31.3-1` | amd64, arm64 | yes, both ways | **current** — Bitcoin Core 31.3, `base-nossl-debian12` |
+| `31.2-1` | amd64, arm64 | yes, both ways | Bitcoin Core 31.2, `base-nossl-debian12` |
 | `31.1-4` | amd64, arm64 | yes, both ways | Bitcoin Core 31.1, `base-nossl-debian12` |
 | `31.1-3` | amd64, arm64 | yes, both ways | `cc-debian12` base: libssl3 and the C++ runtime present, unused |
 | `31.1-2` | amd64, arm64 | **no** | release failed after the push — below |
@@ -240,7 +241,7 @@ it, and that is worth more than closing a one-image gap in the numbering.
 ## Using the image
 
 ```bash
-docker run --rm ghcr.io/thefutoneng/bitcoin:31.2-1
+docker run --rm ghcr.io/thefutoneng/bitcoin:31.3-1
 ```
 
 That works with no arguments and no mount — it runs mainnet against an anonymous
@@ -272,7 +273,7 @@ volume. Everything below is about doing something more deliberate than that.
 prepends to whatever you pass, so this keeps its datadir:
 
 ```bash
-docker run -v bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.2-1 -txindex=1
+docker run -v bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.3-1 -txindex=1
 ```
 
 Both remain overridable, because Bitcoin Core takes the last duplicate on the
@@ -294,11 +295,11 @@ it. `bitcoind` runs on its own defaults until you provide one. Two ways:
 ```bash
 # 1. inside the data volume — read automatically, no flag needed
 docker run -v ./bitcoin.conf:/data/bitcoin.conf:ro -v bitcoin-data:/data \
-  ghcr.io/thefutoneng/bitcoin:31.2-1
+  ghcr.io/thefutoneng/bitcoin:31.3-1
 
 # 2. anywhere else, named explicitly
 docker run -v ./conf:/etc/bitcoin:ro -v bitcoin-data:/data \
-  ghcr.io/thefutoneng/bitcoin:31.2-1 -conf=/etc/bitcoin/bitcoin.conf
+  ghcr.io/thefutoneng/bitcoin:31.3-1 -conf=/etc/bitcoin/bitcoin.conf
 ```
 
 **[`examples/bitcoin.conf`](examples/bitcoin.conf) is a commented teaching
@@ -320,7 +321,7 @@ there:
 
 ```bash
 mkdir -p /srv/bitcoin-data && chown 65532:65532 /srv/bitcoin-data
-docker run --rm -v /srv/bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.2-1
+docker run --rm -v /srv/bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.3-1
 ```
 
 Under Kubernetes, `securityContext.fsGroup: 65532` does the same job for a
@@ -363,7 +364,7 @@ give it the datadir — `--entrypoint` discards the image's own arguments:
 
 ```bash
 docker run --rm --entrypoint /usr/local/bin/bitcoin-cli \
-  -v bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.2-1 \
+  -v bitcoin-data:/data ghcr.io/thefutoneng/bitcoin:31.3-1 \
   -datadir=/data getblockchaininfo
 ```
 
@@ -384,7 +385,7 @@ cosign verify \
   --certificate-identity-regexp \
     '^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ghcr.io/thefutoneng/bitcoin:31.2-1
+  ghcr.io/thefutoneng/bitcoin:31.3-1
 ```
 
 The identity is not optional. Without it you would accept a signature from
@@ -403,7 +404,7 @@ the signature:
 
 ```bash
 cosign verify --key cosign.pub --insecure-ignore-tlog \
-  ghcr.io/thefutoneng/bitcoin:31.2-1
+  ghcr.io/thefutoneng/bitcoin:31.3-1
 ```
 
 Both check the signature on the index, which is what the tag points at. Each
@@ -417,7 +418,7 @@ platform's evidence describes different bytes, and `cosign verify-attestation`
 has no platform option — so look up the digest for your platform first:
 
 ```bash
-ref=ghcr.io/thefutoneng/bitcoin:31.2-1
+ref=ghcr.io/thefutoneng/bitcoin:31.3-1
 digest=$(docker buildx imagetools inspect "$ref" --format \
   '{{range .Manifest.Manifests}}{{if eq .Platform.Architecture "arm64"}}{{.Digest}}{{end}}{{end}}')
 
@@ -459,7 +460,7 @@ other two. `make verify-sig` runs every check at once — both signing modes, th
 index and each image, all six attestations, and what each one is about:
 
 ```bash
-make verify-sig TAG=31.2-1 COSIGN_PUB=cosign.pub \
+make verify-sig TAG=31.3-1 COSIGN_PUB=cosign.pub \
   COSIGN_IDENTITY='^https://github\.com/TheFutonEng/bitcoin/\.github/workflows/release\.yml@refs/tags/'
 ```
 
@@ -489,8 +490,8 @@ Grype, other distributions for Trivy). Either answer alone would have been
 confident and arbitrary.
 
 ```bash
-make attested-sbom TAG=31.2-1 PLATFORM=linux/arm64   # the SBOM the release signed, verified
-make scan          TAG=31.2-1 PLATFORM=linux/arm64   # both scanners, one report
+make attested-sbom TAG=31.3-1 PLATFORM=linux/arm64   # the SBOM the release signed, verified
+make scan          TAG=31.3-1 PLATFORM=linux/arm64   # both scanners, one report
 ```
 
 `make attested-sbom` needs only cosign and network: it fetches the SBOM
@@ -584,9 +585,9 @@ sums.
 Build the tagged commit yourself and check you get the same image:
 
 ```bash
-git checkout <the release tag>          # e.g. v31.2
+git checkout <the release tag>          # e.g. v31.3-1
 make fetch-tarball
-make verify-repro-published TAG=31.2
+make verify-repro-published TAG=31.3-1
 ```
 
 That checks linux/amd64. For a multi-arch release, add `PLATFORM=linux/arm64`
@@ -628,6 +629,7 @@ hardware.
 **And for `31.2-1`**, the first release of a new Bitcoin Core version:
 `linux/amd64 ca4a383f…`, `linux/arm64 f8ab8c3c…`, computed before tagging, read
 back from the registry, and rebuilt from the tag on a second machine.
+**`31.3-1`** the same way: `linux/amd64 0a4ba7dc…`, `linux/arm64 5f0c5bab…`.
 
 **`31.1` predates this and cannot match.** It was built without timestamp
 rewriting, so its files carry the wall-clock time of that build. The check says
