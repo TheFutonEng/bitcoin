@@ -123,7 +123,7 @@ if (( fail )); then
   echo "Either this Bitcoin Core version needs more than glibc (compare upstream's" >&2
   echo "contrib/guix/symbol-check.py ELF_ALLOWED_LIBRARIES with the previous" >&2
   echo "version), or the base changed. A base that provides the library — e.g." >&2
-  echo "distroless cc-debian12 for libgcc_s/libstdc++ — is the fix, not copying it in." >&2
+  echo "distroless cc-debian13 for libgcc_s/libstdc++ — is the fix, not copying it in." >&2
   exit 1
 fi
 echo "OK — every library the binaries need is in the runtime base"

@@ -16,5 +16,5 @@
 # reproducibility regression, and CI is what says so.
 #
 # version:  31.3
-linux/amd64 sha256:c40fdd991baec616bf10625b083cb636609d428024f5f466603a34c763c4566d
-linux/arm64 sha256:dbb491e7b63c082133a0ef813a6fd20562a18c95bece43c7a41efd4628e33c18
+linux/amd64 sha256:0cbd7fd27fe4a7b89c0b787e0a0d49a9c1957a7ca7fda8ece2b2dfc9d54d6a54
+linux/arm64 sha256:2daf4e314594391039f6058cb6b4f251d4c830b4bf9234d940c5f8b0aca15a6c

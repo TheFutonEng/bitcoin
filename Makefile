@@ -16,7 +16,7 @@ VERSION       ?= 31.3
 # Starts at 1, not 0, which is what Debian does and what `31.1-1` should mean:
 # the first packaging of 31.1. Keep in sync with ARG IMAGE_REVISION in the
 # Dockerfile — check-pins.sh asserts it, the same way it does MIN_GOOD_SIGS.
-REVISION      ?= 1
+REVISION      ?= 2
 # PLATFORM selects the architecture; TRIPLE follows from it and is not meant to
 # be set on its own. The Dockerfile makes the same mapping from TARGETARCH — it
 # has to, because one multi-platform build cannot take a per-platform build arg
@@ -57,7 +57,7 @@ IMAGE         ?= $(REGISTRY)/bitcoin
 # changing, which is precisely what REVISION exists to express.
 TAG           ?= $(VERSION)-$(REVISION)
 # Pinned by digest (invariant 4). Keep in sync with the ARG in the Dockerfile.
-RUNTIME_BASE  ?= gcr.io/distroless/base-nossl-debian12@sha256:be40c00dfabd86576d92666e87e406714d5618342de1a0c213ad232de255172e
+RUNTIME_BASE  ?= gcr.io/distroless/base-nossl-debian13@sha256:4006ac92504be607b70de01d1f64f38288c69fcd8faa820f6d3aed266ea32ac5
 MIN_GOOD_SIGS ?= 6
 # The buildkit used for reproducibility checks and for the release push, pinned
 # by digest for the same reason as the base images (invariant 5). It is a build
