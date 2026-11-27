@@ -14,7 +14,7 @@
 #      handed us at build time".
 #   4. Runtime image has no shell, no package manager, and runs as non-root.
 
-ARG BITCOIN_VERSION=31.3
+ARG BITCOIN_VERSION=32.1
 # The image revision for that Bitcoin version, Debian-style: same upstream
 # binaries, different packaging. The published tag and
 # org.opencontainers.image.version are both BITCOIN_VERSION-IMAGE_REVISION.
@@ -23,7 +23,7 @@ ARG BITCOIN_VERSION=31.3
 # agree, exactly as it does for MIN_GOOD_SIGS. The default matters: a direct
 # `docker build` that forgets the build arg still produces a correctly labelled
 # image rather than one claiming to be "31.1-".
-ARG IMAGE_REVISION=2
+ARG IMAGE_REVISION=1
 # Invariant 4: pinned by digest, never by tag. This digest IS the `:nonroot`
 # variant of base-nossl-debian13 as of 2026-11-27 (config User 65532 on amd64
 # and arm64, distroless keyless signature verified, both checked when pinned)
@@ -46,8 +46,10 @@ ARG IMAGE_REVISION=2
 # libc/libm/libpthread/ld-linux on both arches, no import of dlopen,
 # pthread_cancel, pthread_exit or backtrace (glibc's routes to loading
 # libgcc_s), and under LD_DEBUG a full node lifecycle requested only
-# libc/libm/libpthread, on cc as well. Two gates keep it true for future
-# releases: scripts/check-runtime-deps.sh (static, before the build) and
+# libc/libm/libpthread, on cc as well. From 32.x bitcoin-cli imports
+# backtrace (via kj, for -ipcconnect), which without libgcc_s returns 0
+# frames rather than aborting; accepted on review, see DEGRADED_OK in
+# check-runtime-deps.sh. Two gates keep it true for future releases: scripts/check-runtime-deps.sh (static, before the build) and
 # tests/test-runtime-libs.sh (runtime, native on each arch in CI).
 ARG RUNTIME_BASE=gcr.io/distroless/base-nossl-debian13@sha256:4006ac92504be607b70de01d1f64f38288c69fcd8faa820f6d3aed266ea32ac5
 # Pinned by digest, like the runtime base. This stage is where signatures are

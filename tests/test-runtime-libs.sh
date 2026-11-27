@@ -161,8 +161,47 @@ check_loads() { # <label> <file>
 check_loads "bitcoind" "${WORK}/node.log"
 check_loads "bitcoin-cli" "${WORK}/cli-ld.log"
 
+# --- backtrace without libgcc_s -------------------------------------------
+# From 32.x bitcoin-cli imports backtrace() (through kj, behind -ipcconnect).
+# check-runtime-deps.sh accepts that ONLY because glibc's backtrace() degrades
+# without libgcc_s — 0 frames, no crash — where pthread_cancel aborts. That is
+# a property of this image's glibc, so prove it here, on this image, natively
+# on each arch: a minimal program calling backtrace(), run from the image's
+# own filesystem. The lifecycle above does not reach the path (no
+# bitcoin-node), so this is the only place the claim is executed.
+echo
+echo "--- backtrace() without libgcc_s ---"
+if ! command -v cc >/dev/null; then
+  bad "no C compiler (cc) to build the backtrace probe — the degrading-import claim is untested"
+else
+  mkdir -p "${WORK}/probe"
+  cat > "${WORK}/probe/bt.c" <<'C'
+#include <execinfo.h>
+#include <stdio.h>
+int main(void) { void *f[16]; printf("frames=%d\n", backtrace(f, 16)); return 0; }
+C
+  cc -O0 -o "${WORK}/probe/bt" "${WORK}/probe/bt.c"
+  chmod 0755 "${WORK}/probe" "${WORK}/probe/bt"
+  set +e
+  docker run --rm -e LD_DEBUG=libs -v "${WORK}/probe/bt:/bt:ro" --entrypoint /bt \
+    "${IMAGE_REF}" > "${WORK}/bt.out" 2> "${WORK}/bt.ld"
+  rc=$?
+  set -e
+  if (( rc == 0 )) && grep -q '^frames=' "${WORK}/bt.out"; then
+    ok "backtrace() returned ($(cat "${WORK}/bt.out")), exit 0 — degrades, does not crash"
+  else
+    bad "backtrace() probe exit ${rc}: $(head -c 300 "${WORK}/bt.out" "${WORK}/bt.ld" | tr '\n' ' ')"
+  fi
+  # The probe must actually have taken the libgcc_s path, or it proved nothing.
+  if grep -q 'find library=libgcc_s.so.1' "${WORK}/bt.ld"; then
+    ok "glibc looked for libgcc_s.so.1 (the degrading path was exercised)"
+  else
+    bad "glibc never looked for libgcc_s.so.1 — the probe did not exercise the path"
+  fi
+fi
+
 echo
 echo "=============================================="
 printf 'runtime library tests: %d passed, %d failed\n' "${pass}" "${fail}"
 (( fail == 0 )) || exit 1
-echo "OK — bitcoind and bitcoin-cli load nothing beyond glibc, through a full lifecycle"
+echo "OK — bitcoind and bitcoin-cli load nothing beyond glibc, through a full lifecycle; backtrace() degrades safely"

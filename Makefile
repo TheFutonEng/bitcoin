@@ -2,7 +2,7 @@ SHELL := /usr/bin/env bash
 
 # The UPSTREAM Bitcoin Core version. This selects the release tarball and the
 # signed sums; it is not the image's version. See REVISION.
-VERSION       ?= 31.3
+VERSION       ?= 32.1
 # The image revision for that Bitcoin version — the Debian
 # `upstream_version-debian_revision` model. Same binaries, different packaging.
 #
@@ -16,7 +16,7 @@ VERSION       ?= 31.3
 # Starts at 1, not 0, which is what Debian does and what `31.1-1` should mean:
 # the first packaging of 31.1. Keep in sync with ARG IMAGE_REVISION in the
 # Dockerfile — check-pins.sh asserts it, the same way it does MIN_GOOD_SIGS.
-REVISION      ?= 2
+REVISION      ?= 1
 # PLATFORM selects the architecture; TRIPLE follows from it and is not meant to
 # be set on its own. The Dockerfile makes the same mapping from TARGETARCH — it
 # has to, because one multi-platform build cannot take a per-platform build arg

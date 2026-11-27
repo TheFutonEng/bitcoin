@@ -39,7 +39,7 @@
 #
 set -euo pipefail
 
-VERSION="${1:-31.3}"
+VERSION="${1:-32.1}"
 TRIPLE="${2:-x86_64-linux-gnu}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -211,10 +211,18 @@ make_fixture "${F}/duplicate-signer.asc" \
 # THRESHOLD packets, one from a key absent from the keyring entirely. Proves an
 # extra signature cannot pad the count. Weaker than it looks — see the
 # untrusted-in-keyring case below, which is the one that tests the allowlist.
+#
+# Upstream's bundle supplied that signature through 31.x; 32.1's carries only
+# allowlisted signers, and the case silently became a SKIP. So when upstream
+# has none, mint one: a throwaway key whose signature is checked against the
+# REAL keys/, where it is absent — the same property, and the case always runs.
 if (( n_unknown > 0 )); then
-  make_fixture "${F}/unknown-padding.asc" \
-    "${ALLOWED_PKTS[@]:0:THRESHOLD-1}" "${UNKNOWN_PKTS[0]}"
+  pad_pkt="${UNKNOWN_PKTS[0]}"; pad_src="upstream bundle"
+else
+  forge_signer absent "Absent Test Signer <absent@test.invalid>" none no >/dev/null
+  pad_pkt="${WORK}/absent/sig.bin"; pad_src="minted, key absent from keys/"
 fi
+make_fixture "${F}/unknown-padding.asc" "${ALLOWED_PKTS[@]:0:THRESHOLD-1}" "${pad_pkt}"
 
 # --- the two gates --------------------------------------------------------
 # Each returns rc, and prints the count it reported on stdout.
@@ -342,12 +350,8 @@ echo "=== threshold gate: ${THRESHOLD} distinct allowlisted signers required ===
 check_case "at-threshold"     "${F}/at-threshold.asc"     accept "${THRESHOLD}"
 check_case "under-threshold"  "${F}/under-threshold.asc"  reject "$((THRESHOLD - 1))"
 check_case "duplicate-signer" "${F}/duplicate-signer.asc" reject "$((THRESHOLD - 1))"
-if [[ -f "${F}/unknown-padding.asc" ]]; then
-  check_case "unknown-padding" "${F}/unknown-padding.asc" reject "$((THRESHOLD - 1))"
-else
-  echo
-  note "SKIP unknown-padding: SHA256SUMS.asc carries no signature from an untrusted key"
-fi
+note "unknown-padding signature: ${pad_src}"
+check_case "unknown-padding" "${F}/unknown-padding.asc" reject "$((THRESHOLD - 1))"
 
 # --- cases needing a key the upstream bundle cannot supply ----------------
 
