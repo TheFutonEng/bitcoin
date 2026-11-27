@@ -303,6 +303,24 @@ files. For a **major** version, also expect `examples/bitcoin.conf` and
 `tests/test-config.sh` to need attention; that is its own piece of work, not
 a bump.
 
+The first **major** bump, 31.3 -> 32.1 on 2026-11-27 (32.0 was tagged but
+never released upstream), found:
+
+- The library contract (`ELF_ALLOWED_LIBRARIES`) was unchanged, yet
+  `check-runtime-deps` failed: `bitcoin-cli` gained a `backtrace` import. The
+  contract lists what a binary may link, not what glibc may load for it, so
+  step 2 of the bump script cannot see this; the build gate is what caught it.
+  Resolution in *Runtime base* below.
+- `test-threshold`'s `unknown-padding` case had been built from the real
+  bundle's untrusted signatures. 32.1's `SHA256SUMS.asc` has only the 8
+  allowlisted signers, and the case quietly became a SKIP (35 assertions ->
+  30). It now mints a key absent from `keys/` when upstream supplies none.
+  Watch the count: a drop means a case stopped running.
+- `examples/bitcoin.conf` needed nothing: it sets no option 32.x removed or
+  re-defaulted (`-maxconnections` 125 -> 200, `-walletrbf` deprecated,
+  `-debug=libevent` ignored, relative wallet names rejected), and
+  `test-config` passes.
+
 ### Before you tag
 
 ```bash
@@ -521,6 +539,22 @@ to fix is in `release.yml` itself, re-running from the old tag re-runs the bug.
   natively per arch. If a Core release ever needs `libgcc_s` or `libstdc++`,
   the answer is `cc-debian13`, **not** copying libraries in, which
   would put packages outside any SBOM we can attribute.
+
+  "Needs" means a NEEDED entry or a **fatal** lazy import (`pthread_cancel`,
+  `pthread_exit`, `dlopen`), which abort without `libgcc_s`. A **degrading**
+  import (`backtrace*`) only loses its stack trace: glibc returns 0 frames
+  and carries on. Decided 2026-11-27 for 32.1, whose `bitcoin-cli` imports
+  `backtrace` through the kj/Cap'n Proto library behind `-ipcconnect`
+  (Bitcoin Core's own sources never call it; the path only runs when talking
+  IPC to a `bitcoin-node`, which this image does not ship). Moving to
+  `cc-debian13` for an empty stack trace would have taken the scan from 14
+  findings to 56 (18 High). So `check-runtime-deps.sh` passes a degrading
+  import only for a reviewed `binary:import` pair in `DEGRADED_OK` (default
+  `bitcoin-cli:backtrace`), and `test-runtime-libs.sh` runs a `backtrace()`
+  probe on the image itself, natively per arch, proving it returns without
+  crashing and that glibc really looked for `libgcc_s`. A new degrading
+  import, or the same one in `bitcoind`, still fails the build until someone
+  finds what calls it.
 - **`-*notify` options do not work, silently.** `-blocknotify`,
   `-walletnotify`, `-alertnotify`, `-startupnotify` and `-shutdownnotify` run
   through `system()`, which needs `/bin/sh`; neither base has one. The node

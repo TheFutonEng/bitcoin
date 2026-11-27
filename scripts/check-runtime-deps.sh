@@ -17,9 +17,29 @@
 #   lazy     glibc itself dlopen()s libgcc_s.so.1 the first time a program
 #            calls pthread_cancel, pthread_exit or backtrace, to unwind the
 #            stack — a dependency no NEEDED entry shows, and one that fails
-#            at that moment rather than at startup. A binary importing any of
-#            those, or dlopen itself, needs libgcc_s in the base. As of 31.1
-#            neither shipped binary imports any of them, on either arch.
+#            at that moment rather than at startup. What "fails" means
+#            depends on the import, so there are two classes:
+#
+#     fatal      pthread_cancel, pthread_exit: glibc ABORTS the process
+#                ("libgcc_s.so.1 must be installed for pthread_cancel to
+#                work"). dlopen and friends are here too: a binary that can
+#                dlopen can load anything. Always a failure without libgcc_s.
+#
+#     degrading  backtrace, backtrace_symbols(_fd): without libgcc_s,
+#                backtrace() returns 0 frames and the program carries on.
+#                Measured 2026-11-27 on base-nossl-debian13 (glibc 2.41),
+#                and re-proven on every image by tests/test-runtime-libs.sh.
+#                Still a failure unless the binary:import pair is listed in
+#                DEGRADED_OK after review, so a new import stays a decision.
+#
+#            Through 31.x neither shipped binary imported any of them. 32.x's
+#            bitcoin-cli imports backtrace, through the Cap'n Proto/kj library
+#            behind its new -ipcconnect support (kj records a stack trace when
+#            it constructs an exception); Bitcoin Core's own sources never
+#            call it. It only runs when bitcoin-cli talks IPC to a
+#            bitcoin-node, which this image does not ship. The cost of
+#            accepting it: such an error would carry an empty stack trace. The
+#            alternative, cc-debian13, scanned at 56 findings against 14.
 #
 # Static analysis, so it cannot see everything; tests/test-runtime-libs.sh is
 # the runtime half, and runs natively on each architecture in CI.
@@ -30,6 +50,8 @@
 #   RUNTIME_BASE=    the base to check against (the Makefile passes its pin)
 #   SHIP_BINARIES=   binaries the image ships (default: bitcoind bitcoin-cli)
 #   UPSTREAM_DIR=    where the verified tarball lives (default: <repo>/upstream)
+#   DEGRADED_OK=     reviewed binary:import pairs that may use a degrading
+#                    import without libgcc_s (default: bitcoin-cli:backtrace)
 #
 set -euo pipefail
 
@@ -46,9 +68,13 @@ RUNTIME_BASE="${RUNTIME_BASE:-$(sed -n 's/^RUNTIME_BASE[[:space:]]*?*=[[:space:]
 [[ -f "${TARBALL}" ]] || { echo "missing ${TARBALL} — run: make fetch-tarball PLATFORM=${PLATFORM}" >&2; exit 1; }
 command -v readelf >/dev/null || { echo "readelf not found (it ships with binutils)" >&2; exit 1; }
 
-# Imports through which glibc loads libgcc_s at runtime. dlopen is here because
-# a binary that can dlopen can load anything, and nothing static can tell what.
-LAZY_LIBGCC='^(dlopen|dlmopen|__libc_dlopen_mode|pthread_cancel|pthread_exit|backtrace|backtrace_symbols|backtrace_symbols_fd)$'
+# Imports through which glibc loads libgcc_s at runtime, in the two classes the
+# header describes. dlopen is fatal because a binary that can dlopen can load
+# anything, and nothing static can tell what.
+LAZY_FATAL='^(dlopen|dlmopen|__libc_dlopen_mode|pthread_cancel|pthread_exit)$'
+LAZY_DEGRADING='^(backtrace|backtrace_symbols|backtrace_symbols_fd)$'
+DEGRADED_OK="${DEGRADED_OK-bitcoin-cli:backtrace}"
+degraded_ok() { [[ " ${DEGRADED_OK} " == *" $1:$2 "* ]]; }
 
 tmp="$(mktemp -d)"; cid=""
 cleanup() { rm -rf "${tmp}"; [[ -z "${cid}" ]] || docker rm -f "${cid}" >/dev/null 2>&1 || true; }
@@ -104,16 +130,30 @@ for b in ${SHIP_BINARIES}; do
     else printf '  FAIL  %-12s needs %s — NOT in the runtime base\n' "${b}" "${lib}"; fail=1; fi
   done <<<"${needed}"
 
-  lazy="$(readelf --dyn-syms -W "${f}" | awk '$7 == "UND" { sub(/@.*/, "", $8); print $8 }' \
-          | grep -E "${LAZY_LIBGCC}" | sort -u | paste -sd, - || true)"
-  if [[ -z "${lazy}" ]]; then
+  undef="$(readelf --dyn-syms -W "${f}" | awk '$7 == "UND" { sub(/@.*/, "", $8); print $8 }' | sort -u)"
+  fatal="$(grep -E "${LAZY_FATAL}" <<<"${undef}" | paste -sd, - || true)"
+  degrading="$(grep -E "${LAZY_DEGRADING}" <<<"${undef}" || true)"
+  if [[ -z "${fatal}" && -z "${degrading}" ]]; then
     printf '  OK    %-12s imports nothing that makes glibc load libgcc_s\n' "${b}"
   elif has_lib libgcc_s.so.1; then
-    printf '  OK    %-12s imports %s; libgcc_s.so.1 is in the base\n' "${b}" "${lazy}"
+    printf '  OK    %-12s imports %s; libgcc_s.so.1 is in the base\n' "${b}" \
+      "$(paste -sd, - <<<"$(printf '%s\n%s\n' "${fatal//,/$'\n'}" "${degrading}" | grep . )")"
   else
-    printf '  FAIL  %-12s imports %s, so glibc will dlopen libgcc_s.so.1 at runtime —\n' "${b}" "${lazy}"
-    printf '        and the base does not have it. It would start, then fail when that path runs.\n'
-    fail=1
+    if [[ -n "${fatal}" ]]; then
+      printf '  FAIL  %-12s imports %s, so glibc will dlopen libgcc_s.so.1 at runtime —\n' "${b}" "${fatal}"
+      printf '        and the base does not have it. It would start, then ABORT when that path runs.\n'
+      fail=1
+    fi
+    while read -r sym; do
+      [[ -n "${sym}" ]] || continue
+      if degraded_ok "${b}" "${sym}"; then
+        printf '  OK    %-12s imports %s: degrades without libgcc_s (0 frames, no crash); reviewed, in DEGRADED_OK\n' "${b}" "${sym}"
+      else
+        printf '  FAIL  %-12s imports %s; without libgcc_s it degrades rather than crashes, but\n' "${b}" "${sym}"
+        printf '        %s:%s is not in DEGRADED_OK. Find what calls it before accepting it.\n' "${b}" "${sym}"
+        fail=1
+      fi
+    done <<<"${degrading}"
   fi
 done
 

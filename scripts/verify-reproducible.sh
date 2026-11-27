@@ -55,7 +55,7 @@
 #
 set -euo pipefail
 
-VERSION="${VERSION:-31.3}"
+VERSION="${VERSION:-32.1}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 # Derived, never passed: the Dockerfile picks the tarball from TARGETARCH, so
 # this only has to name the same file for the precondition check. Keep in step
