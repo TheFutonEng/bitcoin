@@ -23,11 +23,18 @@ ARG BITCOIN_VERSION=31.3
 # agree, exactly as it does for MIN_GOOD_SIGS. The default matters: a direct
 # `docker build` that forgets the build arg still produces a correctly labelled
 # image rather than one claiming to be "31.1-".
-ARG IMAGE_REVISION=1
+ARG IMAGE_REVISION=2
 # Invariant 4: pinned by digest, never by tag. This digest IS the `:nonroot`
-# variant of base-nossl-debian12 as of 2026-09-26 (config User 65532, checked
-# when pinned) — the name no longer says so, which is the cost of pinning. It
-# is an OCI image index (amd64, arm64/v8, arm/v7, s390x, ppc64le). To bump:
+# variant of base-nossl-debian13 as of 2026-11-27 (config User 65532 on amd64
+# and arm64, distroless keyless signature verified, both checked when pinned)
+# — the name no longer says so, which is the cost of pinning. It is an OCI
+# image index (amd64, arm64, arm, s390x, ppc64le, riscv64).
+#
+# debian13, not debian12, from 31.3-2. distroless stopped rebuilding the
+# debian12 images: on 2026-11-27 `base-nossl-debian12:nonroot` was still the
+# digest pinned on 2026-09-26, with tzdata 2026b and ca-certificates
+# deb12u1 while Debian LTS had shipped fixes for both. Bookworm is in LTS;
+# trixie is where distroless updates land. To bump:
 # re-resolve the tag, update here AND in the Makefile, then run
 # `make check-runtime-deps smoke verify-image verify-contents test`.
 #
@@ -42,7 +49,7 @@ ARG IMAGE_REVISION=1
 # libc/libm/libpthread, on cc as well. Two gates keep it true for future
 # releases: scripts/check-runtime-deps.sh (static, before the build) and
 # tests/test-runtime-libs.sh (runtime, native on each arch in CI).
-ARG RUNTIME_BASE=gcr.io/distroless/base-nossl-debian12@sha256:be40c00dfabd86576d92666e87e406714d5618342de1a0c213ad232de255172e
+ARG RUNTIME_BASE=gcr.io/distroless/base-nossl-debian13@sha256:4006ac92504be607b70de01d1f64f38288c69fcd8faa820f6d3aed266ea32ac5
 # Pinned by digest, like the runtime base. This stage is where signatures are
 # actually verified, so a compromised or silently-updated base here is worse
 # than one in the runtime image: a `gpgv` that emits fabricated VALIDSIG lines

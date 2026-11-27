@@ -506,13 +506,20 @@ to fix is in `release.yml` itself, re-running from the old tag re-runs the bug.
   `tests/test-config.sh` keeps it honest.
 - Ports: 8332 RPC, 8333 P2P, 28332/28333 ZMQ.
 - Ships `bitcoind` and `bitcoin-cli` only.
-- **Runtime base is distroless `base-nossl-debian12`** from 31.1-4 (it was
-  `cc-debian12`): glibc and nothing else a program can link. Justified by
+- **Runtime base is distroless `base-nossl-debian13`** from 31.3-2
+  (`base-nossl-debian12` from 31.1-4, `cc-debian12` before that): glibc and
+  nothing else a program can link. Moved to debian13 because distroless had
+  stopped rebuilding debian12: on 2026-11-27 its `:nonroot` was still the
+  digest pinned two months earlier, missing Debian LTS fixes for tzdata and
+  ca-certificates. Measured on the built image, both scanners: 34 findings
+  -> 14, Grype Critical/High 1/4 -> 0/1, fixable 4 -> 0. The verifier stage
+  stays on `debian:bookworm-slim`: it is thrown away, and only its `gpgv` and
+  coreutils are used. Justified by
   upstream's own release contract — `contrib/guix/symbol-check.py` lets
   `bitcoind` link only libc, libm, libpthread and the loader — and held true by
   two gates: `check-runtime-deps.sh` before every build, `test-runtime-libs.sh`
   natively per arch. If a Core release ever needs `libgcc_s` or `libstdc++`,
-  the answer is back to `cc-debian12`, **not** copying libraries in, which
+  the answer is `cc-debian13`, **not** copying libraries in, which
   would put packages outside any SBOM we can attribute.
 - **`-*notify` options do not work, silently.** `-blocknotify`,
   `-walletnotify`, `-alertnotify`, `-startupnotify` and `-shutdownnotify` run
