@@ -1,0 +1,25 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The buildkit the release and repro builds run on. Tagged, so Renovate can follow it",
+      "managerFilePatterns": ["/^Makefile$/"],
+      "matchStrings": ["BUILDKIT_IMAGE\\s*\\?=\\s*(?<depName>[^:\\s]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[a-f0-9]+)"],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Anything that can change the image's bytes needs a new IMAGE_REVISION and new canonical digests in reproducible-digest.txt, which Renovate cannot produce. List these on the Dependency Dashboard only; a PR opens when the box is ticked, and a person finishes the bump",
+      "matchDatasources": ["docker"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "These pins are digest-only, with no tag, so Renovate assumes :latest. For distroless that is the root variant (we pin :nonroot); for debian it can be a different release. Base refreshes are manual",
+      "matchPackageNames": ["gcr.io/distroless/base-nossl-debian13", "debian"],
+      "enabled": false
+    }
+  ]
+}
